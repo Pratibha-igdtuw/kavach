@@ -5,6 +5,7 @@ dashboard, with ensemble/classified detection, weighted-graph propagation,
 containment actions, persisted history, incident reports, an executive
 summary, an audit trail, and role-based auth (analyst / executive / admin).
 """
+import os
 import threading
 import time
 
@@ -19,6 +20,8 @@ from propagation import PropagationEngine, CRITICAL_THRESHOLD
 import storage
 import auth
 from report import generate_incident_report
+from report_pdf import generate_incident_report_pdf
+import notifier
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "kavach-dev-secret"
@@ -35,7 +38,21 @@ SECTOR_LABEL = {"hospital": "Hospital", "power_grid": "Power Grid", "bank": "Ban
 
 INCIDENT_WINDOW_SECONDS = 24 * 60 * 60  # 24h, for the exec summary
 
-simulator = TelemetrySimulator(SECTORS)
+# ---- replay mode: drive a sector from a real (or real-shaped) CSV instead
+# of pure synthetic generation. Resolution order per sector:
+#   1. explicit env var override, e.g. KAVACH_REPLAY_HOSPITAL=/path/to.csv
+#   2. auto-detected default at data/<sector>_replay.csv, if present
+# A sector with no file either way just falls back to synthetic simulation,
+# so this is fully backward compatible — nothing breaks if you ignore it.
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+REPLAY_FILES = {}
+for _sector in SECTORS:
+    _env_key = f"KAVACH_REPLAY_{_sector.upper()}"
+    _path = os.environ.get(_env_key) or os.path.join(DATA_DIR, f"{_sector}_replay.csv")
+    if os.path.isfile(_path):
+        REPLAY_FILES[_sector] = _path
+
+simulator = TelemetrySimulator(SECTORS, replay_files=REPLAY_FILES)
 detectors = {s: SectorDetector() for s in SECTORS}
 propagation_engine = PropagationEngine(SECTORS)
 
@@ -151,6 +168,7 @@ def background_loop():
                 "attack_confidence": result["attack_confidence"],
                 "contained": sector_contained,
                 "critical_threshold": thresholds["critical_threshold"],
+                "data_source": "replay" if simulator.is_replaying(sector) else "synthetic",
             }
 
             if result["is_anomaly"] and not sector_contained:
@@ -170,6 +188,7 @@ def background_loop():
                 }
                 entry["id"] = storage.insert_log(entry)
                 payload.setdefault("new_log", []).append(entry)
+                notifier.notify_critical(entry)
 
         # ---- cross-sector propagation over the weighted dependency graph ----
         adjusted_scores, prop_events = propagation_engine.propagate(base_scores, anomaly_flags)
@@ -277,6 +296,20 @@ def report(sector):
     return Response(
         md,
         mimetype="text/markdown",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.route("/report/<sector>/pdf")
+@auth.login_required
+def report_pdf(sector):
+    if sector not in SECTORS:
+        return jsonify({"error": "unknown sector"}), 404
+    pdf_bytes = generate_incident_report_pdf(sector, contained=was_contained.get(sector, False))
+    filename = f"kavach_incident_{sector}_{int(time.time())}.pdf"
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 

@@ -102,6 +102,7 @@ function buildCards() {
         <div style="display:flex; align-items:center; gap:10px;">
           <span class="icon">${meta.icon}</span>
           <span class="sector-name">${meta.label}</span>
+          <span class="source-badge" id="source-${key}" style="display:none;"></span>
         </div>
         <span class="badge safe" id="badge-${key}">Secure</span>
       </div>
@@ -482,6 +483,17 @@ function updateCard(key, data) {
   badge.className = `badge ${state === 'danger' ? 'danger' : state === 'warn' ? 'warn' : 'safe'}`;
   badge.textContent = badgeText(state);
 
+  const sourceBadge = document.getElementById(`source-${key}`);
+  if (sourceBadge) {
+    if (data.data_source === 'replay') {
+      sourceBadge.textContent = '⏺ REPLAY';
+      sourceBadge.title = 'Driven by recorded/real telemetry (data/*.csv), not synthetic generation';
+      sourceBadge.style.display = 'inline-block';
+    } else {
+      sourceBadge.style.display = 'none';
+    }
+  }
+
   updateSparkline(key, score);
 
   const factorName = (data.top_factor || '').replace(/_/g, ' ');
@@ -754,9 +766,11 @@ muteBtn.addEventListener('click', () => {
 // ---------- incident report link ----------
 const reportSectorEl = document.getElementById('report-sector');
 const reportBtn = document.getElementById('report-btn');
+const reportBtnPdf = document.getElementById('report-btn-pdf');
 function updateReportLink() {
-  if (!reportSectorEl || !reportBtn) return;
-  reportBtn.href = `/report/${reportSectorEl.value}`;
+  if (!reportSectorEl) return;
+  if (reportBtn) reportBtn.href = `/report/${reportSectorEl.value}`;
+  if (reportBtnPdf) reportBtnPdf.href = `/report/${reportSectorEl.value}/pdf`;
 }
 if (reportSectorEl) {
   reportSectorEl.addEventListener('change', updateReportLink);

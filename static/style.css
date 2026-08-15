@@ -275,6 +275,18 @@ html, body {
 .badge.warn   { background: rgba(217,140,43,0.15); color: var(--warn); border: 1px solid rgba(217,140,43,0.35); }
 .badge.danger { background: rgba(192,57,43,0.18); color: #e57368; border: 1px solid rgba(192,57,43,0.4); }
 
+.source-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  background: rgba(120,90,220,0.15);
+  color: #b39ddb;
+  border: 1px solid rgba(120,90,220,0.35);
+}
+
 .gauge-wrap {
   display: flex;
   align-items: center;
