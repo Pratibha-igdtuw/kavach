@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAVACH — Sentinel Eye</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-role="{{ role }}">
+
+  <div id="preloader" role="status" aria-live="polite">
+    <div class="boot-crest">🛡</div>
+    <div class="boot-title">KAVACH</div>
+    <div class="boot-line" id="boot-line"></div>
+    <div class="boot-bar"><div class="boot-bar-fill" id="boot-bar-fill"></div></div>
+  </div>
+
+  <canvas id="particle-canvas" aria-hidden="true"></canvas>
+  <div class="radar-sweep" aria-hidden="true"></div>
+  <div class="ambient-glow glow-a"></div>
+  <div class="ambient-glow glow-b"></div>
+  <div class="ambient-glow glow-c"></div>
+  <div class="grid-overlay"></div>
+  <div class="noise-overlay" aria-hidden="true"></div>
+  <div class="cursor-ring" id="cursor-ring" aria-hidden="true"></div>
+  <div class="cursor-dot" id="cursor-dot" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="crest">🛡</div>
+      <div class="brand-text">
+        <h1>KAVACH</h1>
+        <span>The Sentinel Eye — Cross-Sector Threat Detection</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="session-pill" id="session-pill">
+        <span class="role-badge role-{{ role }}">{{ {'analyst': 'Analyst', 'executive': 'Executive', 'admin': 'Admin'}[role] }}</span>
+        <span class="session-name">{{ display_name }}</span>
+        {% if role == 'admin' %}
+        <a class="admin-link" href="{{ url_for('admin_panel') }}" title="Manage users">👤 Admin</a>
+        {% endif %}
+        <a class="logout-link" href="{{ url_for('logout') }}" title="Sign out">⏻</a>
+      </div>
+      <button class="mute-btn" id="mute-btn" title="Toggle alert sound">🔊</button>
+      <div class="status-pill" id="global-status">
+        <span class="dot"></span>
+        <span id="global-status-text">MONITORING</span>
+      </div>
+    </div>
+  </header>
+
+  <section class="hero3d" id="hero3d">
+    <canvas id="hero-canvas" aria-hidden="true"></canvas>
+    <div class="hero3d-scrim" aria-hidden="true"></div>
+    <div class="hero3d-content">
+      <span class="hero-eyebrow">Cross-Sector Anomaly Watch</span>
+      <h2 class="hero-title">Every sector.<br>One shield.</h2>
+      <p class="hero-sub">Kavach fuses hospital, power-grid, and bank telemetry into a single sentinel — watching for the anomaly that crosses sector lines.</p>
+      <div class="hero-caption" id="hero-caption" aria-hidden="true"></div>
+    </div>
+    <a href="#sector-grid" class="hero-scroll-cue">
+      <span>Enter the Watch</span>
+      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 4v14M6 12l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+  </section>
+
+  <main class="dashboard">
+
+    {% if role in ['executive', 'admin'] %}
+    <section class="exec-summary-panel glass-panel reveal" id="exec-summary-panel">
+      <h2 class="panel-title">Executive Summary <span class="panel-sub">— org-wide security posture</span></h2>
+      <div class="exec-summary-grid" id="exec-summary-grid">
+        <div class="exec-metric">
+          <div class="exec-metric-label">Overall Risk</div>
+          <div class="exec-metric-value" id="exec-org-risk">—</div>
+          <div class="exec-metric-status" id="exec-status-label">Awaiting data…</div>
+        </div>
+        <div class="exec-metric">
+          <div class="exec-metric-label">Highest-Risk Area</div>
+          <div class="exec-metric-value exec-metric-value-sm" id="exec-top-sector">—</div>
+          <div class="exec-metric-status" id="exec-top-sector-score"></div>
+        </div>
+        <div class="exec-metric">
+          <div class="exec-metric-label">Incidents (24h)</div>
+          <div class="exec-metric-value" id="exec-incidents-24h">—</div>
+          <div class="exec-metric-status">Confirmed anomalies detected</div>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="sector-grid" id="sector-grid">
+      <!-- sector cards injected by JS -->
+    </section>
+
+    <section class="siege-map-panel glass-panel reveal">
+      <h2 class="panel-title">Siege Map <span class="panel-sub">— attack propagation across sectors</span></h2>
+      <svg id="siege-map" viewBox="0 0 600 260" preserveAspectRatio="xMidYMid meet">
+        <!-- edges -->
+        <line id="edge-power_grid-hospital" class="edge" x1="150" y1="130" x2="450" y2="70"></line>
+        <line id="edge-bank-hospital" class="edge" x1="150" y1="220" x2="450" y2="70"></line>
+        <line id="edge-power_grid-bank" class="edge" x1="150" y1="130" x2="150" y2="220"></line>
+
+        <!-- nodes -->
+        <g id="node-power_grid" class="node-group">
+          <circle cx="150" cy="130" r="34" class="node-circle"></circle>
+          <text x="150" y="135" class="node-label">⚡</text>
+          <text x="150" y="185" class="node-title">Power Grid</text>
+        </g>
+        <g id="node-bank" class="node-group">
+          <circle cx="150" cy="220" r="34" class="node-circle"></circle>
+          <text x="150" y="225" class="node-label">🏦</text>
+          <text x="150" y="270" class="node-title">Bank</text>
+        </g>
+        <g id="node-hospital" class="node-group">
+          <circle cx="450" cy="70" r="34" class="node-circle"></circle>
+          <text x="450" y="75" class="node-label">🏥</text>
+          <text x="450" y="125" class="node-title">Hospital</text>
+        </g>
+      </svg>
+    </section>
+
+    <section class="history-panel glass-panel reveal">
+      <h2 class="panel-title">Risk History <span class="panel-sub">— trailing trend per sector</span></h2>
+      <div class="history-chart-wrap">
+        <canvas id="history-chart" height="90"></canvas>
+      </div>
+      <div class="history-legend" id="history-legend"></div>
+    </section>
+
+    <section class="log-panel glass-panel reveal">
+      <div class="log-header">
+        <h2 class="panel-title">Anomaly Log <span class="panel-sub">— live decree of events</span></h2>
+        <div class="log-controls">
+          <select class="log-filter" id="filter-sector">
+            <option value="all">All sectors</option>
+            <option value="hospital">Hospital</option>
+            <option value="power_grid">Power Grid</option>
+            <option value="bank">Bank</option>
+          </select>
+          <select class="log-filter" id="filter-severity">
+            <option value="all">All severity</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+          </select>
+          <select class="log-filter" id="filter-status">
+            <option value="all">All statuses</option>
+            <option value="new">New</option>
+            <option value="acknowledged">Acknowledged</option>
+            <option value="resolved">Resolved</option>
+          </select>
+          <button class="export-btn" id="export-csv">⬇ Export CSV</button>
+        </div>
+      </div>
+      <div class="log-scroll" id="log-scroll">
+        <div class="log-empty" id="log-empty">No anomalies yet. The watch continues…</div>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Incident report:</span>
+        <select class="log-filter" id="report-sector">
+          <option value="hospital">Hospital</option>
+          <option value="power_grid">Power Grid</option>
+          <option value="bank">Bank</option>
+        </select>
+        <a class="export-btn" id="report-btn" href="#" target="_blank">📄 Download Report</a>
+      </div>
+    </section>
+
+    <section class="audit-panel glass-panel reveal" id="audit-panel">
+      <h2 class="panel-title">Audit Trail <span class="panel-sub">— who did what, and when</span></h2>
+      <div class="audit-scroll" id="audit-scroll">
+        <div class="audit-empty" id="audit-empty">No actions recorded yet.</div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="{{ url_for('static', filename='hero3d.js') }}"></script>
+  <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAVACH — Sign In</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+  .login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .login-card {
+    width: 100%;
+    max-width: 380px;
+    padding: 36px 32px;
+    text-align: center;
+  }
+  .login-crest { font-size: 40px; margin-bottom: 6px; }
+  .login-title {
+    font-family: 'Cinzel', serif;
+    font-size: 26px;
+    letter-spacing: 2px;
+    background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    margin-bottom: 4px;
+  }
+  .login-sub {
+    color: var(--text-dim);
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    margin-bottom: 28px;
+  }
+  .login-field {
+    text-align: left;
+    margin-bottom: 16px;
+  }
+  .login-field label {
+    display: block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .login-field input {
+    width: 100%;
+    box-sizing: border-box;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    outline: none;
+  }
+  .login-field input:focus { border-color: rgba(201,162,39,0.6); }
+  .login-pw-wrap { position: relative; }
+  .login-pw-wrap input { padding-right: 40px; }
+  .login-pw-toggle {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    opacity: 0.8;
+  }
+  .login-pw-toggle:hover { color: var(--gold-bright); opacity: 1; }
+  .login-pw-toggle svg { width: 18px; height: 18px; }
+  .login-submit {
+    width: 100%;
+    padding: 11px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(201,162,39,0.4);
+    background: rgba(201,162,39,0.12);
+    color: var(--gold-bright);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+    margin-top: 6px;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .login-submit:hover { background: rgba(201,162,39,0.22); border-color: rgba(201,162,39,0.7); }
+  .login-error {
+    color: #e5867a;
+    font-size: 12px;
+    margin-bottom: 16px;
+  }
+  .login-hint {
+    margin-top: 22px;
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.6;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    padding-top: 14px;
+  }
+  .login-hint b { color: var(--text); }
+</style>
+</head>
+<body>
+  <div class="ambient-glow glow-a"></div>
+  <div class="ambient-glow glow-b"></div>
+  <div class="grid-overlay"></div>
+
+  <div class="login-wrap">
+    <div class="glass-panel login-card">
+      <div class="login-crest">🛡</div>
+      <div class="login-title">KAVACH</div>
+      <div class="login-sub">SENTINEL EYE — SIGN IN TO CONTINUE</div>
+
+      {% if error %}
+        <div class="login-error">{{ error }}</div>
+      {% endif %}
+
+      <form method="POST" action="{{ url_for('login') }}">
+        <div class="login-field">
+          <label for="username">Username</label>
+          <input type="text" id="username" name="username" autocomplete="username" required>
+        </div>
+        <div class="login-field">
+          <label for="password">Password</label>
+          <div class="login-pw-wrap">
+            <input type="password" id="password" name="password" autocomplete="current-password" required>
+            <button type="button" class="login-pw-toggle" id="pw-toggle" aria-label="Show password" aria-pressed="false">
+              <svg id="pw-eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              <svg id="pw-eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+                <path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.6 21.6 0 0 1 5.06-6.06M9.9 4.24A10.4 10.4 0 0 1 12 4c7 0 11 7 11 7a21.6 21.6 0 0 1-2.61 3.68M14.12 14.12a3 3 0 1 1-4.24-4.24"/>
+                <path d="M1 1l22 22"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <button type="submit" class="login-submit">Enter the Watch</button>
+      </form>
+      <script>
+        (function () {
+          var toggle = document.getElementById('pw-toggle');
+          var input = document.getElementById('password');
+          var eyeOpen = document.getElementById('pw-eye-open');
+          var eyeClosed = document.getElementById('pw-eye-closed');
+          toggle.addEventListener('click', function () {
+            var showing = input.type === 'text';
+            input.type = showing ? 'password' : 'text';
+            eyeOpen.style.display = showing ? '' : 'none';
+            eyeClosed.style.display = showing ? 'none' : '';
+            toggle.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+            toggle.setAttribute('aria-pressed', showing ? 'false' : 'true');
+          });
+        })();
+      </script>
+
+      <div class="login-hint">
+        Demo accounts —<br>
+        <b>analyst</b> / analyst123 (full control)<br>
+        <b>exec</b> / exec123 (executive summary view)<br>
+        <b>admin</b> / admin123 (user management)
+      </div>
+    </div>
+  </div>
+</body>
+</html>

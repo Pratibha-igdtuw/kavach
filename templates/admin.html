@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAVACH — Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+  .admin-wrap { max-width: 880px; margin: 0 auto; padding: 32px 24px 60px; position: relative; z-index: 1; }
+  .admin-topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+  .admin-title { font-family: 'Cinzel', serif; font-size: 22px; letter-spacing: 1.5px;
+    background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .admin-nav { display: flex; align-items: center; gap: 14px; }
+  .admin-nav a { color: var(--text-dim); text-decoration: none; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+  .admin-nav a:hover { color: var(--gold-bright); }
+  .admin-panel { padding: 22px 24px; margin-bottom: 22px; }
+  .admin-flash { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 18px; }
+  .admin-flash.error { background: rgba(192,57,43,0.15); color: #e57368; border: 1px solid rgba(192,57,43,0.35); }
+  .admin-flash.success { background: rgba(63,167,150,0.15); color: var(--teal); border: 1px solid rgba(63,167,150,0.35); }
+  .admin-form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .admin-field { display: flex; flex-direction: column; gap: 6px; }
+  .admin-field label { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--text-dim); }
+  .admin-field input, .admin-field select {
+    background: rgba(255,255,255,0.03); border: 1px solid var(--panel-border); color: var(--text);
+    font-family: 'Inter', sans-serif; font-size: 13px; padding: 9px 11px; border-radius: 8px; outline: none;
+  }
+  .admin-field input:focus, .admin-field select:focus { border-color: rgba(201,162,39,0.6); }
+  .admin-submit {
+    padding: 10px 16px; border-radius: 8px; border: 1px solid rgba(201,162,39,0.4);
+    background: rgba(201,162,39,0.12); color: var(--gold-bright); font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase; cursor: pointer;
+    transition: background 0.2s ease;
+  }
+  .admin-submit:hover { background: rgba(201,162,39,0.22); }
+  .admin-submit.danger { border-color: rgba(192,57,43,0.4); background: rgba(192,57,43,0.12); color: #e57368; }
+  .admin-submit.danger:hover { background: rgba(192,57,43,0.22); }
+  table.admin-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.admin-table th { text-align: left; color: var(--text-dim); font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; letter-spacing: 1px; text-transform: uppercase; padding: 8px 10px; border-bottom: 1px solid var(--panel-border); }
+  table.admin-table td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: middle; }
+  .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row-actions input[type="password"] {
+    background: rgba(255,255,255,0.03); border: 1px solid var(--panel-border); color: var(--text);
+    font-family: 'Inter', sans-serif; font-size: 12px; padding: 6px 9px; border-radius: 6px; outline: none; width: 130px;
+  }
+  .row-actions form { display: flex; gap: 6px; align-items: center; margin: 0; }
+  .mini-btn {
+    padding: 6px 10px; border-radius: 6px; border: 1px solid var(--panel-border); background: rgba(255,255,255,0.02);
+    color: var(--text-dim); font-size: 11px; cursor: pointer; font-family: 'JetBrains Mono', monospace;
+  }
+  .mini-btn:hover { color: var(--text); border-color: rgba(201,162,39,0.4); }
+  .mini-btn.danger:hover { color: #e57368; border-color: rgba(192,57,43,0.4); }
+</style>
+</head>
+<body data-role="{{ role }}">
+  <div class="ambient-glow glow-a"></div>
+  <div class="ambient-glow glow-b"></div>
+  <div class="grid-overlay"></div>
+
+  <div class="admin-wrap">
+    <div class="admin-topbar">
+      <div class="admin-title">🛡 KAVACH — Admin</div>
+      <div class="admin-nav">
+        <span class="session-name">{{ display_name }}</span>
+        <a href="{{ url_for('index') }}">← Dashboard</a>
+        <a href="{{ url_for('logout') }}">Sign out</a>
+      </div>
+    </div>
+
+    {% if error %}<div class="admin-flash error">{{ error }}</div>{% endif %}
+    {% if success %}<div class="admin-flash success">{{ success }}</div>{% endif %}
+
+    <section class="glass-panel admin-panel">
+      <h2 class="panel-title">Add User <span class="panel-sub">— create an analyst, executive, or admin account</span></h2>
+      <form method="POST" action="{{ url_for('admin_add_user') }}" style="margin-top: 14px;">
+        <div class="admin-form-row">
+          <div class="admin-field">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" required autocomplete="off">
+          </div>
+          <div class="admin-field">
+            <label for="display_name">Display Name</label>
+            <input type="text" id="display_name" name="display_name" autocomplete="off">
+          </div>
+          <div class="admin-field">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required autocomplete="new-password">
+          </div>
+          <div class="admin-field">
+            <label for="role">Role</label>
+            <select id="role" name="role" required>
+              {% for r in roles %}
+              <option value="{{ r }}">{{ r|capitalize }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <button type="submit" class="admin-submit">+ Create Account</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="glass-panel admin-panel">
+      <h2 class="panel-title">Detection Thresholds <span class="panel-sub">— per-sector risk-score cutoffs</span></h2>
+      <table class="admin-table">
+        <thead>
+          <tr><th>Sector</th><th>Alert Threshold</th><th>Critical Threshold</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          {% for s in sectors %}
+          {% set t = thresholds.get(s, {'alert_threshold': 40, 'critical_threshold': 75}) %}
+          <tr>
+            <td>{{ sector_labels.get(s, s) }}</td>
+            <td colspan="2">
+              <form method="POST" action="{{ url_for('admin_update_thresholds') }}" class="row-actions">
+                <input type="hidden" name="sector" value="{{ s }}">
+                <div class="admin-field" style="min-width: 90px;">
+                  <label for="alert_threshold_{{ s }}">Alert &gt;</label>
+                  <input type="number" step="0.1" min="0" max="100" id="alert_threshold_{{ s }}"
+                         name="alert_threshold" value="{{ t.alert_threshold }}" required>
+                </div>
+                <div class="admin-field" style="min-width: 90px;">
+                  <label for="critical_threshold_{{ s }}">Critical &gt;</label>
+                  <input type="number" step="0.1" min="0" max="100" id="critical_threshold_{{ s }}"
+                         name="critical_threshold" value="{{ t.critical_threshold }}" required>
+                </div>
+                <button type="submit" class="mini-btn" title="Save thresholds">💾 Save</button>
+              </form>
+            </td>
+            <td></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p style="font-size: 12px; color: var(--text-dim); margin-top: 12px;">
+        A reading is flagged as an anomaly once its risk score passes <b>Alert &gt;</b>.
+        It's treated as critical — high-severity log entries, red card state, exec "Critical" status —
+        once it passes <b>Critical &gt;</b>. Critical must be higher than Alert.
+      </p>
+    </section>
+
+    <section class="glass-panel admin-panel">
+      <h2 class="panel-title">Accounts <span class="panel-sub">— {{ users|length }} total</span></h2>
+      <table class="admin-table">
+        <thead>
+          <tr><th>Username</th><th>Display Name</th><th>Role</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td>{{ u.username }}</td>
+            <td>{{ u.display_name }}</td>
+            <td><span class="role-badge role-{{ u.role }}">{{ u.role|capitalize }}</span></td>
+            <td>
+              <div class="row-actions">
+                <form method="POST" action="{{ url_for('admin_reset_password', username=u.username) }}">
+                  <input type="password" name="new_password" placeholder="New password" required autocomplete="new-password">
+                  <button type="submit" class="mini-btn" title="Reset password">🔑 Reset</button>
+                </form>
+                <form method="POST" action="{{ url_for('admin_delete_user', username=u.username) }}"
+                      onsubmit="return confirm('Delete user {{ u.username }}? This cannot be undone.');">
+                  <button type="submit" class="mini-btn danger" title="Delete account">🗑 Delete</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </div>
+</body>
+</html>
