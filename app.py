@@ -521,4 +521,4 @@ def on_update_alert_status(data):
 if __name__ == "__main__":
     t = threading.Thread(target=background_loop, daemon=True)
     t.start()
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True, use_reloader=False, allow_unsafe_werkzeug=True)
+    socketio.run(app, host="0.0.0.0", port=5001, debug=True, use_reloader=False, allow_unsafe_werkzeug=True)

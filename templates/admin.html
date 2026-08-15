@@ -114,23 +114,28 @@
           {% set t = thresholds.get(s, {'alert_threshold': 40, 'critical_threshold': 75}) %}
           <tr>
             <td>{{ sector_labels.get(s, s) }}</td>
-            <td colspan="2">
-              <form method="POST" action="{{ url_for('admin_update_thresholds') }}" class="row-actions">
+            <td>
+              <div class="admin-field" style="min-width: 90px;">
+                <label for="alert_threshold_{{ s }}">Alert &gt;</label>
+                <input type="number" step="0.1" min="0" max="100" id="alert_threshold_{{ s }}"
+                       name="alert_threshold" form="threshold_form_{{ s }}"
+                       value="{{ t.alert_threshold }}" required>
+              </div>
+            </td>
+            <td>
+              <div class="admin-field" style="min-width: 90px;">
+                <label for="critical_threshold_{{ s }}">Critical &gt;</label>
+                <input type="number" step="0.1" min="0" max="100" id="critical_threshold_{{ s }}"
+                       name="critical_threshold" form="threshold_form_{{ s }}"
+                       value="{{ t.critical_threshold }}" required>
+              </div>
+            </td>
+            <td>
+              <form method="POST" action="{{ url_for('admin_update_thresholds') }}" id="threshold_form_{{ s }}">
                 <input type="hidden" name="sector" value="{{ s }}">
-                <div class="admin-field" style="min-width: 90px;">
-                  <label for="alert_threshold_{{ s }}">Alert &gt;</label>
-                  <input type="number" step="0.1" min="0" max="100" id="alert_threshold_{{ s }}"
-                         name="alert_threshold" value="{{ t.alert_threshold }}" required>
-                </div>
-                <div class="admin-field" style="min-width: 90px;">
-                  <label for="critical_threshold_{{ s }}">Critical &gt;</label>
-                  <input type="number" step="0.1" min="0" max="100" id="critical_threshold_{{ s }}"
-                         name="critical_threshold" value="{{ t.critical_threshold }}" required>
-                </div>
                 <button type="submit" class="mini-btn" title="Save thresholds">💾 Save</button>
               </form>
             </td>
-            <td></td>
           </tr>
           {% endfor %}
         </tbody>
