@@ -4,8 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KAVACH — Sentinel Eye</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body data-role="{{ role }}">
@@ -72,6 +71,9 @@
     {% if role in ['executive', 'admin'] %}
     <section class="exec-summary-panel glass-panel reveal" id="exec-summary-panel">
       <h2 class="panel-title">Executive Summary <span class="panel-sub">— org-wide security posture</span></h2>
+      {% if role == 'executive' %}
+      <p class="exec-briefing" id="exec-briefing">Assessing current posture…</p>
+      {% endif %}
       <div class="exec-summary-grid" id="exec-summary-grid">
         <div class="exec-metric">
           <div class="exec-metric-label">Overall Risk</div>
@@ -87,6 +89,27 @@
           <div class="exec-metric-label">Incidents (24h)</div>
           <div class="exec-metric-value" id="exec-incidents-24h">—</div>
           <div class="exec-metric-status">Confirmed anomalies detected</div>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if role == 'admin' %}
+    <section class="admin-quick-panel glass-panel reveal" id="admin-quick-panel">
+      <h2 class="panel-title">System Configuration <span class="panel-sub">— admin snapshot</span></h2>
+      <div class="admin-quick-grid" id="admin-quick-grid">
+        <div class="admin-quick-metric">
+          <div class="admin-quick-label">Registered Users</div>
+          <div class="admin-quick-value" id="admin-total-users">—</div>
+          <div class="admin-quick-status" id="admin-role-breakdown"></div>
+        </div>
+        <div class="admin-quick-metric">
+          <div class="admin-quick-label">Detection Thresholds</div>
+          <div class="admin-quick-thresholds" id="admin-threshold-list">Loading…</div>
+        </div>
+        <div class="admin-quick-metric admin-quick-links">
+          <a class="export-btn" href="{{ url_for('admin_panel') }}">👤 Manage Users</a>
+          <a class="export-btn" href="{{ url_for('admin_panel') }}#thresholds">⚙ Tune Thresholds</a>
         </div>
       </div>
     </section>
@@ -131,8 +154,14 @@
       <div class="history-legend" id="history-legend"></div>
     </section>
 
-    <section class="log-panel glass-panel reveal">
+    <section class="log-panel glass-panel reveal" data-log-view="{{ 'brief' if role == 'executive' else 'full' }}">
       <div class="log-header">
+        {% if role == 'executive' %}
+        <h2 class="panel-title">Notable Events <span class="panel-sub">— high-severity items only</span></h2>
+        <div class="log-controls">
+          <button class="export-btn" id="export-csv">⬇ Export CSV</button>
+        </div>
+        {% else %}
         <h2 class="panel-title">Anomaly Log <span class="panel-sub">— live decree of events</span></h2>
         <div class="log-controls">
           <select class="log-filter" id="filter-sector">
@@ -154,6 +183,7 @@
           </select>
           <button class="export-btn" id="export-csv">⬇ Export CSV</button>
         </div>
+        {% endif %}
       </div>
       <div class="log-scroll" id="log-scroll">
         <div class="log-empty" id="log-empty">No anomalies yet. The watch continues…</div>
@@ -170,19 +200,21 @@
       </div>
     </section>
 
+    {% if role != 'executive' %}
     <section class="audit-panel glass-panel reveal" id="audit-panel">
       <h2 class="panel-title">Audit Trail <span class="panel-sub">— who did what, and when</span></h2>
       <div class="audit-scroll" id="audit-scroll">
         <div class="audit-empty" id="audit-empty">No actions recorded yet.</div>
       </div>
     </section>
+    {% endif %}
 
   </main>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="{{ url_for('static', filename='vendor/three.min.js') }}"></script>
   <script src="{{ url_for('static', filename='hero3d.js') }}"></script>
   <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
   <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
 </html>

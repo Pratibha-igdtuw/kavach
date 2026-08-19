@@ -423,6 +423,16 @@ html, body {
 .logout-link:hover { color: var(--danger); }
 
 /* ---------- executive summary panel ---------- */
+.exec-briefing {
+  margin: 10px 0 0;
+  padding: 12px 16px;
+  background: rgba(139,58,255,0.08);
+  border: 1px solid rgba(139,58,255,0.25);
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
 .exec-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -458,6 +468,55 @@ html, body {
 .exec-status-safe { color: var(--teal); }
 .exec-status-warn { color: var(--warn); }
 .exec-status-danger { color: #e57368; }
+
+/* ---------- admin quick panel ---------- */
+.admin-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+.admin-quick-metric {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.admin-quick-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.admin-quick-value {
+  font-family: 'Cinzel', serif;
+  font-size: 34px;
+  color: var(--text);
+  line-height: 1.1;
+}
+.admin-quick-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.admin-quick-thresholds { margin-top: 4px; }
+.admin-threshold-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.admin-threshold-row:last-child { border-bottom: none; }
+.admin-quick-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+}
 
 /* ---------- audit trail panel ---------- */
 .audit-scroll {

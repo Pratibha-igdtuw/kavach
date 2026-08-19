@@ -5,6 +5,8 @@ const ROLE = document.body.dataset.role || 'executive';
 // user/threshold management via the /admin panel. Executive: read-only.
 const IS_ANALYST = ROLE === 'analyst' || ROLE === 'admin';
 const SHOW_EXEC_SUMMARY = ROLE === 'executive' || ROLE === 'admin';
+const IS_EXEC = ROLE === 'executive';
+const IS_ADMIN = ROLE === 'admin';
 
 const SECTOR_META = {
   hospital:   { icon: '🏥', label: 'Hospital' },
@@ -496,9 +498,17 @@ function updateCard(key, data) {
 
   updateSparkline(key, score);
 
-  const factorName = (data.top_factor || '').replace(/_/g, ' ');
-  document.getElementById(`factor-${key}`).innerHTML =
-    `Top factor: <b>${factorName}</b> · ${data.metrics ? data.metrics[data.top_factor] : ''}`;
+  const factorEl = document.getElementById(`factor-${key}`);
+  if (IS_EXEC) {
+    // Executives get a plain-English read, not raw z-score/metric jargon.
+    factorEl.innerHTML = score >= 75 ? 'Status: <b>Critical — under active review</b>'
+      : score >= 40 ? 'Status: <b>Elevated — being monitored</b>'
+      : 'Status: <b>Normal</b>';
+  } else {
+    const factorName = (data.top_factor || '').replace(/_/g, ' ');
+    factorEl.innerHTML =
+      `Top factor: <b>${factorName}</b> · ${data.metrics ? data.metrics[data.top_factor] : ''}`;
+  }
 
   const attackRow = document.getElementById(`attack-type-${key}`);
   if (data.contained) {
@@ -506,9 +516,14 @@ function updateCard(key, data) {
   } else if (data.predicted_attack_type) {
     const label = ATTACK_TYPE_LABEL[data.predicted_attack_type] || data.predicted_attack_type;
     const pct = Math.round((data.attack_confidence || 0) * 100);
-    const mitre = MITRE_MAPPING[data.predicted_attack_type];
-    const mitreTag = mitre ? `<span class="mitre-tag" title="${mitre.technique_name}">${mitre.technique_id}</span>` : '';
-    attackRow.innerHTML = `<span class="attack-chip">⚠ ${label} <em>${pct}% match</em></span>${mitreTag}`;
+    if (IS_EXEC) {
+      // Skip the MITRE technique ID for execs — keep the plain label + confidence only.
+      attackRow.innerHTML = `<span class="attack-chip">⚠ ${label} <em>${pct}% match</em></span>`;
+    } else {
+      const mitre = MITRE_MAPPING[data.predicted_attack_type];
+      const mitreTag = mitre ? `<span class="mitre-tag" title="${mitre.technique_name}">${mitre.technique_id}</span>` : '';
+      attackRow.innerHTML = `<span class="attack-chip">⚠ ${label} <em>${pct}% match</em></span>${mitreTag}`;
+    }
   } else {
     attackRow.innerHTML = '';
   }
@@ -554,8 +569,10 @@ function addLogEntries(entries) {
 }
 
 function getFilteredLogs() {
-  const sectorFilter = filterSectorEl.value;
-  const severityFilter = filterSeverityEl.value;
+  // Executives don't get the filter dropdowns (removed from the DOM for a
+  // simpler "briefing" view) — they always see high-severity items only.
+  const sectorFilter = filterSectorEl ? filterSectorEl.value : 'all';
+  const severityFilter = filterSeverityEl ? filterSeverityEl.value : (IS_EXEC ? 'high' : 'all');
   const statusFilter = filterStatusEl ? filterStatusEl.value : 'all';
   return allLogs.filter(e =>
     (sectorFilter === 'all' || e.sector === sectorFilter) &&
@@ -657,8 +674,8 @@ function downloadCSV() {
   URL.revokeObjectURL(url);
 }
 
-filterSectorEl.addEventListener('change', renderLogs);
-filterSeverityEl.addEventListener('change', renderLogs);
+if (filterSectorEl) filterSectorEl.addEventListener('change', renderLogs);
+if (filterSeverityEl) filterSeverityEl.addEventListener('change', renderLogs);
 if (filterStatusEl) filterStatusEl.addEventListener('change', renderLogs);
 exportBtn.addEventListener('click', downloadCSV);
 
@@ -677,6 +694,22 @@ function updateExecSummary(summary) {
   execTopSectorScoreEl.textContent = `Risk score: ${summary.top_sector_score}/100`;
 
   execIncidents24hEl.textContent = summary.incidents_24h;
+
+  updateExecBriefing(summary);
+}
+
+const execBriefingEl = document.getElementById('exec-briefing');
+function updateExecBriefing(summary) {
+  if (!execBriefingEl) return;
+  let text;
+  if (summary.org_risk >= 75) {
+    text = `⚠ Critical: ${summary.top_sector_label} is under active threat (risk ${summary.top_sector_score}/100). The security team has been alerted and is responding.`;
+  } else if (summary.org_risk >= 45) {
+    text = `Elevated risk in ${summary.top_sector_label} (${summary.top_sector_score}/100) — being actively monitored, no action needed from you right now.`;
+  } else {
+    text = `All sectors nominal. ${summary.incidents_24h} incident${summary.incidents_24h === 1 ? '' : 's'} handled in the last 24 hours.`;
+  }
+  execBriefingEl.textContent = text;
 }
 
 // ---------- audit trail ----------
@@ -920,3 +953,37 @@ socket.on('thresholds_updated', (payload) => {
 socket.on('alert_status_updated', (payload) => {
   applyAlertStatusUpdate(payload);
 });
+
+// ---------- demo reset ----------
+socket.on('demo_reset', () => {
+  allLogs.length = 0;
+  allAudit.length = 0;
+  renderLogs();
+  renderAudit();
+});
+
+// ---------- admin quick-panel ----------
+if (IS_ADMIN) {
+  fetch('/api/admin/summary')
+    .then(r => r.json())
+    .then(data => {
+      const totalEl = document.getElementById('admin-total-users');
+      const breakdownEl = document.getElementById('admin-role-breakdown');
+      const thresholdListEl = document.getElementById('admin-threshold-list');
+      if (totalEl) totalEl.textContent = data.total_users;
+      if (breakdownEl) {
+        const parts = Object.entries(data.role_counts).map(([role, count]) => `${count} ${role}`);
+        breakdownEl.textContent = parts.join(' · ');
+      }
+      if (thresholdListEl && data.thresholds) {
+        thresholdListEl.innerHTML = Object.entries(data.thresholds).map(([sector, t]) => {
+          const label = SECTOR_LABEL[sector] || sector;
+          return `<div class="admin-threshold-row"><span>${label}</span><span>Alert ${t.alert_threshold} · Critical ${t.critical_threshold}</span></div>`;
+        }).join('');
+      }
+    })
+    .catch(() => {
+      const thresholdListEl = document.getElementById('admin-threshold-list');
+      if (thresholdListEl) thresholdListEl.textContent = 'Unable to load — check /admin panel.';
+    });
+}

@@ -4,8 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KAVACH — Admin</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
   .admin-wrap { max-width: 880px; margin: 0 auto; padding: 32px 24px 60px; position: relative; z-index: 1; }
@@ -75,8 +74,22 @@
     {% if success %}<div class="admin-flash success">{{ success }}</div>{% endif %}
 
     <section class="glass-panel admin-panel">
+      <h2 class="panel-title">Demo Controls <span class="panel-sub">— for repeat live demos (e.g. multiple judges)</span></h2>
+      <p style="font-size: 13px; color: var(--text-dim); margin: 10px 0 14px;">
+        Clears the Anomaly Log, Risk History, and Audit Trail so the dashboard looks fresh for the next run.
+        User accounts and detection thresholds are not affected.
+      </p>
+      <form method="POST" action="{{ url_for('admin_reset_demo') }}"
+            onsubmit="return confirm('Reset all demo data (log, risk history, audit trail)? This cannot be undone.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="admin-submit danger">🔄 Reset Demo Data</button>
+      </form>
+    </section>
+
+    <section class="glass-panel admin-panel">
       <h2 class="panel-title">Add User <span class="panel-sub">— create an analyst, executive, or admin account</span></h2>
       <form method="POST" action="{{ url_for('admin_add_user') }}" style="margin-top: 14px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="admin-form-row">
           <div class="admin-field">
             <label for="username">Username</label>
@@ -132,6 +145,7 @@
             </td>
             <td>
               <form method="POST" action="{{ url_for('admin_update_thresholds') }}" id="threshold_form_{{ s }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="sector" value="{{ s }}">
                 <button type="submit" class="mini-btn" title="Save thresholds">💾 Save</button>
               </form>
@@ -162,11 +176,13 @@
             <td>
               <div class="row-actions">
                 <form method="POST" action="{{ url_for('admin_reset_password', username=u.username) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="password" name="new_password" placeholder="New password" required autocomplete="new-password">
                   <button type="submit" class="mini-btn" title="Reset password">🔑 Reset</button>
                 </form>
                 <form method="POST" action="{{ url_for('admin_delete_user', username=u.username) }}"
                       onsubmit="return confirm('Delete user {{ u.username }}? This cannot be undone.');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit" class="mini-btn danger" title="Delete account">🗑 Delete</button>
                 </form>
               </div>

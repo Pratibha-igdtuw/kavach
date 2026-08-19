@@ -334,3 +334,17 @@ def recent_audit(limit=50):
             "FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
+
+
+# ---------------- demo reset ----------------
+
+def reset_demo_data():
+    """Wipes anomaly log, risk history, and audit trail — everything that
+    accumulates during a live demo run — while leaving user accounts and
+    threshold configuration untouched. Used by the admin 'Reset Demo'
+    action so the dashboard can be handed to the next judge looking clean,
+    without restarting the whole server (which would also lose users)."""
+    with _conn() as c:
+        c.execute("DELETE FROM log")
+        c.execute("DELETE FROM risk_history")
+        c.execute("DELETE FROM audit_log")

@@ -1,0 +1,72 @@
+/* cinzel-latin-500-normal */
+@font-face {
+  font-family: 'Cinzel';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(./cinzel-latin-500-normal.woff2) format('woff2'), url(./files/cinzel-latin-500-normal.woff) format('woff');
+}
+/* cinzel-latin-600-normal */
+@font-face {
+  font-family: 'Cinzel';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(./cinzel-latin-600-normal.woff2) format('woff2'), url(./files/cinzel-latin-600-normal.woff) format('woff');
+}
+/* cinzel-latin-700-normal */
+@font-face {
+  font-family: 'Cinzel';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./cinzel-latin-700-normal.woff2) format('woff2'), url(./files/cinzel-latin-700-normal.woff) format('woff');
+}
+/* inter-latin-400-normal */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./inter-latin-400-normal.woff2) format('woff2'), url(./files/inter-latin-400-normal.woff) format('woff');
+}
+/* inter-latin-500-normal */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(./inter-latin-500-normal.woff2) format('woff2'), url(./files/inter-latin-500-normal.woff) format('woff');
+}
+/* inter-latin-600-normal */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(./inter-latin-600-normal.woff2) format('woff2'), url(./files/inter-latin-600-normal.woff) format('woff');
+}
+/* jetbrains-mono-latin-400-normal */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./jetbrains-mono-latin-400-normal.woff2) format('woff2'), url(./files/jetbrains-mono-latin-400-normal.woff) format('woff');
+}
+/* jetbrains-mono-latin-500-normal */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(./jetbrains-mono-latin-500-normal.woff2) format('woff2'), url(./files/jetbrains-mono-latin-500-normal.woff) format('woff');
+}
+/* jetbrains-mono-latin-700-normal */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./jetbrains-mono-latin-700-normal.woff2) format('woff2'), url(./files/jetbrains-mono-latin-700-normal.woff) format('woff');
+}

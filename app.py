@@ -6,6 +6,7 @@ containment actions, persisted history, incident reports, an executive
 summary, an audit trail, and role-based auth (analyst / executive / admin).
 """
 import os
+import secrets
 import threading
 import time
 
@@ -13,6 +14,9 @@ from flask import Flask, render_template, request, session, redirect, url_for, j
 from werkzeug.security import generate_password_hash
 
 from flask_socketio import SocketIO
+from flask_wtf import CSRFProtect
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from simulator import TelemetrySimulator, ATTACK_SIGNATURES, MITRE_MAPPING
 from detector import SectorDetector
@@ -24,7 +28,16 @@ from report_pdf import generate_incident_report_pdf
 import notifier
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "kavach-dev-secret"
+# SECRET_KEY comes from the environment in real deployments (set it before
+# running, e.g. `export SECRET_KEY=...`). Falling back to a freshly
+# generated random key means the app never silently ships with a known,
+# hardcoded secret — the trade-off is that sessions won't survive a
+# restart unless SECRET_KEY is set explicitly.
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+
+csrf = CSRFProtect(app)
+limiter = Limiter(get_remote_address, app=app, default_limits=[])
+
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 SECTORS = ["hospital", "power_grid", "bank"]
@@ -239,6 +252,7 @@ def _group_by_target(events):
 # ---------------- auth routes ----------------
 
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 def login():
     error = None
     if request.method == "POST":
@@ -315,6 +329,41 @@ def report_pdf(sector):
 
 
 # ---------------- admin routes (user management) ----------------
+
+@app.route("/admin/reset-demo", methods=["POST"])
+@auth.admin_required
+def admin_reset_demo():
+    """Wipes the anomaly log, risk history, and audit trail, and clears any
+    active containment/detector state — so the dashboard can be handed to
+    the next judge looking clean, without restarting the server (which
+    would drop user accounts and threshold config). Users/thresholds are
+    intentionally left untouched."""
+    global detectors
+    storage.reset_demo_data()
+    for sector in SECTORS:
+        contained[sector] = 0
+        was_contained[sector] = False
+    detectors = {s: SectorDetector() for s in SECTORS}
+    log_audit_and_emit("Reset demo data")
+    socketio.emit("demo_reset", {})
+    return redirect(url_for("admin_panel", success="Demo data cleared — log, risk history, and audit trail reset."))
+
+
+@app.route("/api/admin/summary")
+@auth.admin_required
+def api_admin_summary():
+    """Lightweight, dashboard-friendly snapshot for the Admin quick-panel —
+    keeps admins from having to open /admin just to see user/threshold state."""
+    users = storage.list_users()
+    role_counts = {r: 0 for r in auth.ROLES}
+    for u in users:
+        role_counts[u["role"]] = role_counts.get(u["role"], 0) + 1
+    return jsonify({
+        "total_users": len(users),
+        "role_counts": role_counts,
+        "thresholds": sector_thresholds,
+    })
+
 
 @app.route("/admin")
 @auth.admin_required
@@ -521,4 +570,8 @@ def on_update_alert_status(data):
 if __name__ == "__main__":
     t = threading.Thread(target=background_loop, daemon=True)
     t.start()
-    socketio.run(app, host="0.0.0.0", port=5001, debug=True, use_reloader=False, allow_unsafe_werkzeug=True)
+    # DEMO_DEBUG=1 enables Flask debug mode for local development. Leave
+    # unset for the actual jury demo — debug mode shows full Python
+    # tracebacks on screen if anything throws mid-presentation.
+    debug_mode = os.environ.get("DEMO_DEBUG") == "1"
+    socketio.run(app, host="0.0.0.0", port=5001, debug=debug_mode, use_reloader=False, allow_unsafe_werkzeug=True)
