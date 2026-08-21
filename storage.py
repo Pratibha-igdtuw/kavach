@@ -16,6 +16,7 @@ Tables:
   - incident_link: Incident relationships (related, chain, etc.)
   - incident_comment: Collaboration thread per incident
 """
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -25,11 +26,14 @@ DB_PATH = "kavach.db"
 
 @contextmanager
 def _conn():
-    c = sqlite3.connect(DB_PATH)
+    c = sqlite3.connect(DB_PATH, timeout=10.0, check_same_thread=False)
     c.row_factory = sqlite3.Row
     try:
         yield c
         c.commit()
+    except Exception as e:
+        c.rollback()
+        raise
     finally:
         c.close()
 
@@ -102,30 +106,6 @@ def init_db():
                 updated_ts REAL
             )
         """)
-        # Real telemetry ingested via /api/ingest (or future connectors).
-        # Each row is one reading for one sector — the same shape as what the
-        # simulator produces, so SectorDetector.retrain_on_real_data() can pull
-        # a rolling window of these rows and feed them straight to IsolationForest.
-        # source_label is a free-text tag set by the caller (e.g. "syslog",
-        # "cloudwatch", "siem_export", "webhook") so an admin can see where each
-        # batch came from in the health panel.
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS ingest_telemetry (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts REAL NOT NULL,
-                sector TEXT NOT NULL,
-                network_traffic_mbps REAL,
-                failed_logins REAL,
-                cpu_usage_pct REAL,
-                data_egress_mb REAL,
-                active_connections REAL,
-                source_label TEXT
-            )
-        """)
-        c.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ingest_sector_ts "
-            "ON ingest_telemetry(sector, ts)"
-        )
         c.execute("CREATE INDEX IF NOT EXISTS idx_log_sector ON log(sector)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_history_sector_ts ON risk_history(sector, ts)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)")
@@ -142,10 +122,21 @@ def init_db():
             "ack_ts": "ALTER TABLE log ADD COLUMN ack_ts REAL",
             "resolved_by": "ALTER TABLE log ADD COLUMN resolved_by TEXT",
             "resolved_ts": "ALTER TABLE log ADD COLUMN resolved_ts REAL",
+            # Explainability columns: the detector always computes these, but
+            # until this migration they were silently dropped on insert (see
+            # insert_log below) -- so drill-down/incident views could never
+            # show *why* a score was high once the live socket payload was gone.
+            "forest_risk": "ALTER TABLE log ADD COLUMN forest_risk REAL",
+            "trend_risk": "ALTER TABLE log ADD COLUMN trend_risk REAL",
+            "metric_scores": "ALTER TABLE log ADD COLUMN metric_scores TEXT",
         }
         for col, ddl in migrations.items():
             if col not in existing_cols:
-                c.execute(ddl)
+                try:
+                    c.execute(ddl)
+                except sqlite3.OperationalError:
+                    # Column already exists or other issue, skip
+                    pass
 
         # Initialize case management tables (safe to call on existing DB)
     init_case_management_db()
@@ -157,15 +148,30 @@ def insert_log(entry):
     """Inserts a log/anomaly entry. If entry carries a `status` (i.e. it's a
     genuine anomaly that belongs in the triage queue, as opposed to a
     propagation/manual/system note), that status plus MITRE mapping fields
-    are persisted too. Returns the new row's id so callers can reference it
-    for later triage state changes."""
+    are persisted too. Also persists the detector's explainability output
+    (forest_risk / trend_risk / per-metric z-scores) when present, so *why*
+    a score was high survives a page refresh instead of only existing in the
+    live socket payload. Returns the new row's id so callers can reference
+    it for later triage state changes."""
+    metric_scores = entry.get("metric_scores")
+    metric_scores_json = None
+    if metric_scores:
+        try:
+            metric_scores_json = json.dumps(metric_scores)
+        except (TypeError, ValueError):
+            metric_scores_json = None
+    
     with _conn() as c:
         cur = c.execute(
             "INSERT INTO log (ts, time_str, sector, message, severity, attack_type, "
-            "status, mitre_id, mitre_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (time.time(), entry["time"], entry["sector"], entry["message"],
-             entry["severity"], entry.get("attack_type"), entry.get("status"),
-             entry.get("mitre_id"), entry.get("mitre_label")),
+            "status, mitre_id, mitre_label, forest_risk, trend_risk, metric_scores) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (time.time(), entry.get("time", ""), entry.get("sector", ""), 
+             entry.get("message", ""), entry.get("severity", ""),
+             entry.get("attack_type"), entry.get("status"),
+             entry.get("mitre_id"), entry.get("mitre_label"),
+             entry.get("forest_risk"), entry.get("trend_risk"),
+             metric_scores_json),
         )
         return cur.lastrowid
 
@@ -182,10 +188,22 @@ def recent_logs(limit=30):
     with _conn() as c:
         rows = c.execute(
             "SELECT id, ts, time_str as time, sector, message, severity, attack_type, "
-            "status, mitre_id, mitre_label, ack_by, ack_ts, resolved_by, resolved_ts "
+            "status, mitre_id, mitre_label, ack_by, ack_ts, resolved_by, resolved_ts, "
+            "forest_risk, trend_risk, metric_scores "
             "FROM log ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        out = []
+        for r in reversed(rows):
+            d = dict(r)
+            raw_scores = d.pop("metric_scores", None)
+            try:
+                d["metric_scores"] = json.loads(raw_scores) if raw_scores else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                d["metric_scores"] = {}
+            d["forest_risk"] = float(d.get("forest_risk") or 0.0)
+            d["trend_risk"] = float(d.get("trend_risk") or 0.0)
+            out.append(d)
+        return out
 
 
 def update_alert_status(log_id, status, actor):
@@ -227,6 +245,24 @@ def alert_counts_by_status():
             "SELECT status, COUNT(*) as cnt FROM log WHERE status IS NOT NULL GROUP BY status"
         ).fetchall()
         return {r["status"]: r["cnt"] for r in rows}
+
+
+def alert_kpis():
+    """Summary counts for the Analyst SOC console KPI row: critical (open,
+    high-severity), new, and active (not yet resolved) alerts, all drawn
+    from the same triage-eligible `log` rows the alert queue already uses."""
+    with _conn() as c:
+        critical = c.execute(
+            "SELECT COUNT(*) as cnt FROM log WHERE status IS NOT NULL "
+            "AND status != 'resolved' AND severity = 'high'"
+        ).fetchone()["cnt"]
+        new = c.execute(
+            "SELECT COUNT(*) as cnt FROM log WHERE status = 'new'"
+        ).fetchone()["cnt"]
+        active = c.execute(
+            "SELECT COUNT(*) as cnt FROM log WHERE status IS NOT NULL AND status != 'resolved'"
+        ).fetchone()["cnt"]
+        return {"critical": critical, "new": new, "active_incidents": active}
 
 
 def sector_history(sector, limit=120):
@@ -423,6 +459,22 @@ def audit_log_filtered(actor=None, sector=None, date_from=None, date_to=None, li
             f"SELECT time_str as time, actor, role, action, sector, detail "
             f"FROM audit_log {where} ORDER BY id DESC LIMIT ?",
             (*params, limit),
+        ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+
+def recent_audit_by_actions(actions, limit=20):
+    """Audit entries whose `action` is in the given list, most recent first.
+    Used by the Admin console's "Recent Admin Actions" panel so it only
+    shows configuration/governance events, not SOC response actions."""
+    if not actions:
+        return []
+    placeholders = ",".join("?" for _ in actions)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT time_str as time, actor, role, action, sector, detail "
+            f"FROM audit_log WHERE action IN ({placeholders}) ORDER BY id DESC LIMIT ?",
+            (*actions, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -769,10 +821,10 @@ def get_incident_alerts(incident_id):
             raw_scores = d.pop("metric_scores", None)
             try:
                 d["metric_scores"] = json.loads(raw_scores) if raw_scores else {}
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, json.JSONDecodeError):
                 d["metric_scores"] = {}
-            d["forest_risk"] = d.get("forest_risk") or 0.0
-            d["trend_risk"] = d.get("trend_risk") or 0.0
+            d["forest_risk"] = float(d.get("forest_risk") or 0.0)
+            d["trend_risk"] = float(d.get("trend_risk") or 0.0)
             results.append(d)
         return results
 
@@ -950,6 +1002,8 @@ def suggest_incident_links(incident_id):
     """Suggest other incidents to link (based on MITRE technique, sector, time window).
     
     Returns list of incidents sorted by relevance score.
+    
+    FIX: Properly handle empty or small technique sets without SQL parameter issues.
     """
     current = get_incident(incident_id)
     if not current:
@@ -957,33 +1011,49 @@ def suggest_incident_links(incident_id):
     
     # Get MITRE techniques from alerts in this incident
     alerts = get_incident_alerts(incident_id)
-    techniques = set(a.get("mitre_id") for a in alerts if a.get("mitre_id"))
+    techniques = [a.get("mitre_id") for a in alerts if a.get("mitre_id")]
+    techniques = list(set(techniques))  # Deduplicate
     
     # Find other open incidents in same sector or with same MITRE technique
     # created in the last 30 days
     cutoff = time.time() - (30 * 24 * 60 * 60)
     
     with _conn() as c:
-        rows = c.execute(
+        # Build query based on whether we have techniques
+        if techniques:
+            # Use a CASE statement to match on techniques
+            technique_placeholders = ",".join("?" * len(techniques))
+            query = f"""
+                SELECT DISTINCT i.id, i.title, i.sector, i.status, i.ts,
+                       COUNT(DISTINCT ia.log_id) as alert_count
+                FROM incident i
+                LEFT JOIN incident_alert ia ON i.id = ia.incident_id
+                WHERE i.id != ? AND i.ts >= ? AND i.status IN ('open', 'investigating')
+                  AND (i.sector = ? OR EXISTS (
+                    SELECT 1 FROM incident_alert ia2
+                    INNER JOIN log l ON ia2.log_id = l.id
+                    WHERE ia2.incident_id = i.id AND l.mitre_id IN ({technique_placeholders})
+                  ))
+                GROUP BY i.id
+                ORDER BY i.ts DESC
+                LIMIT 10
             """
-            SELECT DISTINCT i.id, i.title, i.sector, i.status, i.ts,
-                   COUNT(DISTINCT ia.log_id) as alert_count
-            FROM incident i
-            LEFT JOIN incident_alert ia ON i.id = ia.incident_id
-            WHERE i.id != ? AND i.ts >= ? AND i.status IN ('open', 'investigating')
-              AND (i.sector = ? OR EXISTS (
-                SELECT 1 FROM incident_alert ia2
-                INNER JOIN log l ON ia2.log_id = l.id
-                WHERE ia2.incident_id = i.id AND l.mitre_id IN (?, ?)
-              ))
-            GROUP BY i.id
-            ORDER BY i.ts DESC
-            LIMIT 10
-            """,
-            (incident_id, cutoff, current.get("sector"), 
-             list(techniques)[0] if techniques else None,
-             list(techniques)[1] if len(techniques) > 1 else None),
-        ).fetchall()
+            params = [incident_id, cutoff, current.get("sector")] + techniques
+            rows = c.execute(query, params).fetchall()
+        else:
+            # No techniques, just match on sector
+            query = """
+                SELECT DISTINCT i.id, i.title, i.sector, i.status, i.ts,
+                       COUNT(DISTINCT ia.log_id) as alert_count
+                FROM incident i
+                LEFT JOIN incident_alert ia ON i.id = ia.incident_id
+                WHERE i.id != ? AND i.ts >= ? AND i.status IN ('open', 'investigating')
+                  AND i.sector = ?
+                GROUP BY i.id
+                ORDER BY i.ts DESC
+                LIMIT 10
+            """
+            rows = c.execute(query, [incident_id, cutoff, current.get("sector")]).fetchall()
         
         return [dict(r) for r in rows]
 
@@ -1003,7 +1073,7 @@ def incident_stats():
         closed_times = c.execute(
             "SELECT AVG(closed_ts - ts) as avg_time FROM incident WHERE status = 'closed' AND closed_ts IS NOT NULL"
         ).fetchone()
-        avg_close_time = int(closed_times["avg_time"]) if closed_times["avg_time"] else 0
+        avg_close_time = int(closed_times["avg_time"]) if closed_times and closed_times["avg_time"] else 0
         
         return {
             "total": total,
@@ -1011,90 +1081,3 @@ def incident_stats():
             "closed": closed,
             "avg_time_to_close_seconds": avg_close_time,
         }
-
-
-# ---------------- real telemetry ingestion ----------------
-
-INGEST_METRIC_COLS = [
-    "network_traffic_mbps",
-    "failed_logins",
-    "cpu_usage_pct",
-    "data_egress_mb",
-    "active_connections",
-]
-
-
-def insert_ingest_readings(sector, readings, source_label="api"):
-    """Bulk-insert a list of metric dicts for *sector* into ingest_telemetry.
-
-    Each dict in *readings* must contain the five INGEST_METRIC_COLS keys
-    (extra keys are silently ignored).  Returns the number of rows written.
-    A missing or non-numeric metric value for a row causes that row to be
-    skipped rather than crashing the whole batch.
-    """
-    rows = []
-    now = time.time()
-    for r in readings:
-        try:
-            row = tuple(float(r[m]) for m in INGEST_METRIC_COLS)
-        except (KeyError, TypeError, ValueError):
-            continue  # skip malformed rows
-        rows.append((now, sector, *row, source_label))
-
-    if not rows:
-        return 0
-
-    with _conn() as c:
-        c.executemany(
-            "INSERT INTO ingest_telemetry "
-            "(ts, sector, network_traffic_mbps, failed_logins, cpu_usage_pct, "
-            " data_egress_mb, active_connections, source_label) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            rows,
-        )
-    return len(rows)
-
-
-def get_ingest_baseline_window(sector, window_seconds=3600, limit=2000):
-    """Return up to *limit* recent ingest_telemetry rows for *sector* as a
-    list of metric dicts — ready to hand straight to numpy / IsolationForest.
-
-    window_seconds controls how far back to look (default 1 h).  The caller
-    can pass a larger value when bootstrapping a fresh detector that hasn't
-    seen much traffic yet.
-    """
-    cutoff = time.time() - window_seconds
-    with _conn() as c:
-        rows = c.execute(
-            "SELECT network_traffic_mbps, failed_logins, cpu_usage_pct, "
-            "       data_egress_mb, active_connections "
-            "FROM ingest_telemetry "
-            "WHERE sector = ? AND ts >= ? "
-            "ORDER BY ts DESC LIMIT ?",
-            (sector, cutoff, limit),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def count_ingest_rows(sector):
-    """How many ingested telemetry rows exist for this sector (for health panel)."""
-    with _conn() as c:
-        row = c.execute(
-            "SELECT COUNT(*) as cnt FROM ingest_telemetry WHERE sector = ?",
-            (sector,),
-        ).fetchone()
-    return row["cnt"] if row else 0
-
-
-def prune_ingest_telemetry(sector, keep_seconds=86400):
-    """Delete ingest rows older than *keep_seconds* for *sector*.
-
-    Called automatically after each retrain so the table doesn't grow
-    unboundedly.  Default: keep 24 h of history.
-    """
-    cutoff = time.time() - keep_seconds
-    with _conn() as c:
-        c.execute(
-            "DELETE FROM ingest_telemetry WHERE sector = ? AND ts < ?",
-            (sector, cutoff),
-        )

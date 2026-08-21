@@ -10,6 +10,7 @@ Integration points:
 import json
 import time
 from flask import jsonify, request, session, redirect, url_for
+from flask_socketio import join_room, leave_room
 from functools import wraps
 
 # Import the case management storage functions
@@ -391,9 +392,11 @@ def register_case_management_sockets(socketio, case_storage):
         """Subscribe to updates for a specific incident."""
         incident_id = (data or {}).get("incident_id")
         if incident_id and case_storage.get_incident(incident_id):
-            # Use SocketIO rooms to group clients watching the same incident
+            # Use Flask-SocketIO's own room helpers, which operate on the
+            # *current* request's socket connection automatically -- no
+            # need (and no safe way) to manually resolve a session id.
             room = f"incident_{incident_id}"
-            socketio.server.environ[socketio.server.eio.socket_receive_timeout].join(room)
+            join_room(room)
     
     
     @socketio.on("incident_unsubscribe")
@@ -402,7 +405,7 @@ def register_case_management_sockets(socketio, case_storage):
         incident_id = (data or {}).get("incident_id")
         if incident_id:
             room = f"incident_{incident_id}"
-            socketio.server.environ[socketio.server.eio.socket_receive_timeout].leave(room)
+            leave_room(room)
 
 
 # ============================================================================

@@ -1236,10 +1236,10 @@ button:focus-visible, select:focus-visible, .node-group:focus-visible {
 
 /* Drill-down card */
 .drill-down-card {
-  background: var(--bg-primary); border: 1px solid var(--panel-border);
+  background: #12151f; border: 1px solid var(--panel-border);
   border-radius: 12px; padding: 28px; max-width: 720px; width: 100%;
   max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-  font-family: 'Inter', sans-serif;
+  font-family: 'Inter', sans-serif; position: relative;
 }
 .drill-down-card h2 { font-family: 'Cinzel', serif; font-size: 18px;
   background: linear-gradient(180deg, var(--gold-bright), var(--gold));
@@ -1363,4 +1363,321 @@ body.perf-mode svg {
   color: #e57368;
   opacity: 1;
   text-shadow: 0 0 8px rgba(229, 115, 104, 0.4);
+}
+
+/* ======================================================================
+   ROLE-SPECIFIC DASHBOARDS (Analyst SOC console / Manager posture console /
+   Admin console) -- shared building blocks. Each dashboard composes these
+   differently rather than reusing one common page layout.
+   ====================================================================== */
+
+/* ---------- role sub-nav ---------- */
+.role-nav {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 48px 18px;
+  flex-wrap: wrap;
+}
+.role-nav a {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+.role-nav a:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.role-nav a.is-active {
+  color: var(--gold-bright);
+  background: rgba(201,162,39,0.10);
+  border-color: rgba(201,162,39,0.30);
+}
+
+/* ---------- console header (workspace title + tagline) ---------- */
+.console-header {
+  position: relative;
+  z-index: 1;
+  padding: 8px 48px 26px;
+}
+.console-title {
+  font-family: 'Cinzel', serif;
+  font-size: 26px;
+  letter-spacing: 1.5px;
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  margin-bottom: 4px;
+}
+.console-tagline {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+/* ---------- generic dashboard shell ---------- */
+.console-main {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 32px 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* ---------- KPI row (Analyst) ---------- */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+.kpi-card {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.kpi-card .kpi-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.kpi-card .kpi-value {
+  font-family: 'Cinzel', serif;
+  font-size: 32px;
+  line-height: 1.1;
+}
+.kpi-card.kpi-critical .kpi-value { color: #e57368; }
+.kpi-card.kpi-new .kpi-value { color: var(--warn); }
+.kpi-card.kpi-active .kpi-value { color: var(--gold-bright); }
+.kpi-card.kpi-contained .kpi-value { color: var(--teal); }
+
+/* ---------- alert queue (Analyst) ---------- */
+.alert-queue { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.alert-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--panel-border);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.015);
+}
+.alert-row.sev-high { border-left-color: var(--danger); }
+.alert-row.sev-medium { border-left-color: var(--warn); }
+.alert-row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.alert-row-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.alert-row-msg { font-size: 13px; color: var(--text); }
+.alert-row-meta { font-size: 11px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+.alert-risk { font-family: 'Cinzel', serif; font-size: 20px; text-align: right; min-width: 46px; }
+.alert-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.alert-actions .mini-btn { white-space: nowrap; }
+.alert-empty { padding: 30px 10px; text-align: center; color: var(--text-dim); font-size: 13px; }
+
+/* ---------- risk comparison bars (Manager) ---------- */
+.risk-compare-list { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+.risk-compare-row { display: flex; flex-direction: column; gap: 6px; }
+.risk-compare-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.risk-compare-name { font-weight: 600; }
+.risk-compare-score { font-family: 'Cinzel', serif; font-size: 18px; }
+.risk-compare-track { height: 10px; border-radius: 6px; background: rgba(255,255,255,0.05); overflow: hidden; }
+.risk-compare-fill { height: 100%; border-radius: 6px; transition: width 0.6s var(--ease-out-expo); }
+.risk-compare-level { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.6px; text-transform: uppercase; color: var(--text-dim); }
+
+/* ---------- business impact grid (Manager) ---------- */
+.impact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+.impact-card {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.impact-sector { font-size: 12px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px; }
+.impact-metric { display: flex; justify-content: space-between; font-size: 12.5px; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.impact-metric:last-child { border-bottom: none; }
+.impact-metric .impact-metric-name { color: var(--text-dim); }
+.impact-metric .impact-metric-val { font-weight: 600; }
+.impact-metric-val.level-normal { color: var(--teal); }
+.impact-metric-val.level-elevated { color: var(--warn); }
+.impact-metric-val.level-severe { color: #e57368; }
+
+/* ---------- recommendation card (Manager) ---------- */
+.recommend-list { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+.recommend-card {
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(139,58,255,0.25);
+  background: rgba(139,58,255,0.06);
+}
+.recommend-card.priority-high { border-color: rgba(192,57,43,0.35); background: rgba(192,57,43,0.08); }
+.recommend-icon { font-size: 18px; line-height: 1; }
+.recommend-body { font-size: 13px; line-height: 1.5; }
+.recommend-body b { color: var(--text); }
+
+/* ---------- system status list (Admin) ---------- */
+.status-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.015);
+}
+.status-row-name { font-size: 13px; font-weight: 600; }
+.status-row-detail { font-size: 11px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+.status-chip {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 5px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.status-chip.ONLINE { background: rgba(63,167,150,0.15); color: var(--teal); border: 1px solid rgba(63,167,150,0.35); }
+.status-chip.WARNING { background: rgba(217,140,43,0.15); color: var(--warn); border: 1px solid rgba(217,140,43,0.35); }
+.status-chip.OFFLINE, .status-chip.ERROR { background: rgba(192,57,43,0.18); color: #e57368; border: 1px solid rgba(192,57,43,0.4); }
+
+/* ---------- users & roles summary (Admin) ---------- */
+.role-count-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+.role-count-card {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  text-align: center;
+}
+.role-count-value { font-family: 'Cinzel', serif; font-size: 28px; }
+.role-count-label { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+/* ---------- data-source / replay badges reused in Admin config table ---------- */
+.config-status-pill {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(63,167,150,0.15);
+  color: var(--teal);
+  border: 1px solid rgba(63,167,150,0.35);
+}
+.config-status-pill.replay { background: rgba(201,162,39,0.15); color: var(--gold-bright); border-color: rgba(201,162,39,0.35); }
+
+@media (max-width: 720px) {
+  .console-main { padding: 0 18px 50px; }
+  .role-nav, .console-header { padding-left: 20px; padding-right: 20px; }
+  .alert-row { grid-template-columns: 1fr; }
+  .alert-risk { text-align: left; }
+}
+/* ======================================================================
+   INCIDENT WORKFLOW + RISK-FACTOR EXPLAINABILITY (Analyst)
+   Reuses existing color tokens / .glass-panel / .status-badge patterns --
+   no new visual language introduced.
+   ====================================================================== */
+
+/* ---------- "why is this score high" factor chips (sector cards) ---------- */
+.factor-breakdown { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.factor-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  padding: 3px 8px; border-radius: 6px;
+  background: rgba(201,162,39,0.08); border: 1px solid rgba(201,162,39,0.25);
+  color: var(--text-dim);
+}
+.factor-chip-pts { color: var(--gold-bright); font-weight: 600; }
+
+/* ---------- factor breakdown bars (drill-down modal / incident detail) ---------- */
+.factor-bar-row { display: grid; grid-template-columns: 120px 1fr 40px; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
+.factor-bar-label { color: var(--text-dim); }
+.factor-bar-track { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.05); overflow: hidden; }
+.factor-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--gold), var(--gold-bright)); }
+.factor-bar-pts { color: var(--gold-bright); font-weight: 600; text-align: right; }
+
+/* ---------- alert row: clickable to open drill-down ---------- */
+.alert-row.is-clickable { cursor: pointer; transition: background 0.15s ease; }
+.alert-row.is-clickable:hover { background: rgba(201,162,39,0.05); }
+
+/* ---------- incident cards (Analyst Incidents panel) ---------- */
+.incident-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.incident-card {
+  padding: 14px 16px; border: 1px solid var(--panel-border); border-left-width: 3px;
+  border-radius: 10px; background: rgba(255,255,255,0.015); cursor: pointer;
+  transition: background 0.15s ease, border-color 0.2s ease;
+}
+.incident-card:hover { background: rgba(201,162,39,0.05); }
+.incident-card.sev-critical, .incident-card.sev-high { border-left-color: var(--danger); }
+.incident-card.sev-medium { border-left-color: var(--warn); }
+.incident-card.sev-low { border-left-color: var(--teal); }
+.incident-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.incident-card-id { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); }
+.incident-card-title { font-size: 13.5px; color: var(--text); margin-top: 4px; }
+.incident-card-meta { display: flex; gap: 10px; margin-top: 8px; font-size: 11px; color: var(--text-dim); flex-wrap: wrap; align-items: center; }
+.incident-status-pill {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.5px;
+  text-transform: uppercase; padding: 3px 9px; border-radius: 999px;
+}
+.incident-status-pill.open { background: rgba(192,57,43,0.15); color: #e57368; border: 1px solid rgba(192,57,43,0.35); }
+.incident-status-pill.investigating { background: rgba(217,140,43,0.15); color: var(--warn); border: 1px solid rgba(217,140,43,0.35); }
+.incident-status-pill.closed { background: rgba(63,167,150,0.15); color: var(--teal); border: 1px solid rgba(63,167,150,0.35); }
+.incident-empty { padding: 24px 10px; text-align: center; color: var(--text-dim); font-size: 13px; }
+
+/* ---------- incident detail (inside drill-down modal) ---------- */
+.incident-detail-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 14px 0 20px; }
+.incident-detail-meta .k { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.incident-detail-meta .v { font-size: 13px; color: var(--text); }
+.incident-alert-row { padding: 10px 12px; border: 1px solid var(--panel-border); border-radius: 8px; margin-bottom: 8px; background: rgba(255,255,255,0.02); }
+.incident-alert-row .msg { font-size: 12.5px; color: var(--text); margin-bottom: 6px; }
+.incident-comment { padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12.5px; }
+.incident-comment:last-child { border-bottom: none; }
+.incident-comment .author { color: var(--gold-bright); font-weight: 500; }
+.incident-form-row { display: flex; gap: 8px; margin-top: 10px; }
+.incident-form-row input, .incident-form-row textarea, .incident-form-row select {
+  flex: 1; background: rgba(255,255,255,0.03); border: 1px solid var(--panel-border); color: var(--text);
+  font-family: 'Inter', sans-serif; font-size: 12.5px; padding: 8px 10px; border-radius: 8px; outline: none;
+}
+.incident-btn {
+  padding: 8px 14px; border-radius: 8px; border: 1px solid rgba(201,162,39,0.4);
+  background: rgba(201,162,39,0.12); color: var(--gold-bright); font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase; cursor: pointer; white-space: nowrap;
+}
+.incident-btn:hover { background: rgba(201,162,39,0.22); }
+.incident-btn.danger { border-color: rgba(192,57,43,0.4); background: rgba(192,57,43,0.1); color: #e57368; }
+.playbook-mini { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); }
+.playbook-mini h4 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 6px; }
+
+@media (max-width: 640px) {
+  .factor-bar-row { grid-template-columns: 90px 1fr 32px; }
+  .drill-down-card { padding: 20px; }
 }

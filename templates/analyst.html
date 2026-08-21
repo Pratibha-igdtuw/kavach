@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAVACH — Security Operations Center</title>
+<link href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-role="{{ role }}">
+
+  <div class="ambient-glow glow-a"></div>
+  <div class="ambient-glow glow-b"></div>
+  <div class="ambient-glow glow-c"></div>
+  <div class="grid-overlay"></div>
+
+  {% set workspace_title = 'Security Operations Center' %}
+  {% set show_connection_status = true %}
+  {% set nav_items = [
+    ('overview', 'Overview'), ('alerts', 'Live Alerts'), ('incidents', 'Incidents'),
+    ('threat-map', 'Threat Map'), ('risk', 'Risk Analysis'),
+    ('reports', 'Reports'), ('audit', 'Audit Trail')
+  ] %}
+  {% include "_topbar.html" %}
+
+  <section class="hero3d" id="hero3d">
+    <canvas id="hero-canvas" aria-hidden="true"></canvas>
+    <div class="hero3d-scrim" aria-hidden="true"></div>
+    <div class="hero3d-content">
+      <span class="hero-eyebrow">Cross-Sector Anomaly Watch</span>
+      <h2 class="hero-title">Every sector.<br>One shield.</h2>
+      <p class="hero-sub">Kavach fuses hospital, power-grid, and bank telemetry into a single sentinel — watching for the anomaly that crosses sector lines.</p>
+      <div class="hero-caption" id="hero-caption" aria-hidden="true"></div>
+    </div>
+  </section>
+
+
+  <div class="console-header" id="overview">
+    <div class="console-title">SOC Analyst Console</div>
+    <div class="console-tagline">Detect → Investigate → Respond → Resolve</div>
+  </div>
+
+  <main class="console-main">
+
+    <section class="kpi-row">
+      <div class="kpi-card kpi-critical">
+        <div class="kpi-label">Critical Alerts</div>
+        <div class="kpi-value" id="kpi-critical">{{ kpis.critical }}</div>
+      </div>
+      <div class="kpi-card kpi-new">
+        <div class="kpi-label">New Alerts</div>
+        <div class="kpi-value" id="kpi-new">{{ kpis.new }}</div>
+      </div>
+      <div class="kpi-card kpi-active">
+        <div class="kpi-label">Active Incidents</div>
+        <div class="kpi-value" id="kpi-active">{{ kpis.active_incidents }}</div>
+      </div>
+      <div class="kpi-card kpi-contained">
+        <div class="kpi-label">Contained Incidents</div>
+        <div class="kpi-value" id="kpi-contained">{{ contained_count }}</div>
+      </div>
+    </section>
+
+    <section class="glass-panel reveal" id="alerts">
+      <div class="log-header">
+        <h2 class="panel-title">Active Alert Queue <span class="panel-sub">— acknowledge, investigate, contain, resolve. Click a row for full detail.</span></h2>
+        <div class="log-controls">
+          <select class="log-filter" id="filter-sector">
+            <option value="all">All sectors</option>
+            {% for s in sectors %}<option value="{{ s }}">{{ sector_labels.get(s, s) }}</option>{% endfor %}
+          </select>
+          <select class="log-filter" id="filter-severity">
+            <option value="all">All severity</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+          </select>
+          <select class="log-filter" id="filter-status">
+            <option value="all">All statuses</option>
+            <option value="new">New</option>
+            <option value="acknowledged">Acknowledged</option>
+            <option value="resolved">Resolved</option>
+          </select>
+          <button class="export-btn" id="export-csv">⬇ Export CSV</button>
+          <button class="mute-btn" id="mute-btn" title="Toggle alert sound">🔊</button>
+        </div>
+      </div>
+      <div class="alert-queue" id="alert-queue"></div>
+      <div class="alert-empty" id="alert-empty">No active alerts. The watch continues…</div>
+    </section>
+
+    <section class="glass-panel reveal" id="incidents">
+      <div class="log-header">
+        <h2 class="panel-title">Incidents <span class="panel-sub">— Telemetry → Anomaly → Alert → Incident → Investigation → Response → Resolution</span></h2>
+        <div class="log-controls">
+          <select class="log-filter" id="incident-filter-status">
+            <option value="open">Open</option>
+            <option value="investigating">Investigating</option>
+            <option value="closed">Closed</option>
+            <option value="">All</option>
+          </select>
+          <select class="log-filter" id="incident-filter-sector">
+            <option value="">All sectors</option>
+            {% for s in sectors %}<option value="{{ s }}">{{ sector_labels.get(s, s) }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="incident-list" id="incident-list"></div>
+      <div class="incident-empty" id="incident-empty">No incidents yet — open one from an alert in the queue above, or a critical anomaly will suggest one automatically.</div>
+    </section>
+
+    <section class="siege-map-panel glass-panel reveal" id="threat-map">
+      <h2 class="panel-title">Threat Propagation <span class="panel-sub">— live siege map, use it to trace attack spread during investigation</span></h2>
+      <svg id="siege-map" viewBox="0 0 600 260" preserveAspectRatio="xMidYMid meet">
+        <line id="edge-power_grid-hospital" class="edge" x1="150" y1="130" x2="450" y2="70"></line>
+        <line id="edge-bank-hospital" class="edge" x1="150" y1="220" x2="450" y2="70"></line>
+        <line id="edge-power_grid-bank" class="edge" x1="150" y1="130" x2="150" y2="220"></line>
+        <g id="node-power_grid" class="node-group">
+          <circle cx="150" cy="130" r="34" class="node-circle"></circle>
+          <text x="150" y="135" class="node-label">⚡</text>
+          <text x="150" y="185" class="node-title">Power Grid</text>
+        </g>
+        <g id="node-bank" class="node-group">
+          <circle cx="150" cy="220" r="34" class="node-circle"></circle>
+          <text x="150" y="225" class="node-label">🏦</text>
+          <text x="150" y="270" class="node-title">Bank</text>
+        </g>
+        <g id="node-hospital" class="node-group">
+          <circle cx="450" cy="70" r="34" class="node-circle"></circle>
+          <text x="450" y="75" class="node-label">🏥</text>
+          <text x="450" y="125" class="node-title">Hospital</text>
+        </g>
+      </svg>
+    </section>
+
+    <section class="reveal" id="risk">
+      <h2 class="panel-title" style="margin-bottom:12px;">Risk Analysis <span class="panel-sub">— per-sector operational telemetry</span></h2>
+      <section class="sector-grid" id="sector-grid"></section>
+    </section>
+
+    <section class="history-panel glass-panel reveal">
+      <h2 class="panel-title">Risk History <span class="panel-sub">— trailing trend per sector</span></h2>
+      <div class="history-chart-wrap"><canvas id="history-chart" height="90"></canvas></div>
+      <div class="history-legend" id="history-legend"></div>
+    </section>
+
+    <section class="glass-panel reveal" id="reports">
+      <h2 class="panel-title">Incident Reports <span class="panel-sub">— generate a report for a sector</span></h2>
+      <div class="report-row" style="margin-top:12px;">
+        <span class="report-label">Sector:</span>
+        <select class="log-filter" id="report-sector">
+          {% for s in sectors %}<option value="{{ s }}">{{ sector_labels.get(s, s) }}</option>{% endfor %}
+        </select>
+        <a class="export-btn" id="report-btn" href="#" target="_blank">📄 Markdown</a>
+        <a class="export-btn" id="report-btn-pdf" href="#" target="_blank">📑 PDF</a>
+      </div>
+    </section>
+
+    <section class="audit-panel glass-panel reveal" id="audit">
+      <h2 class="panel-title">Audit Trail <span class="panel-sub">— who did what, and when</span></h2>
+      <div class="audit-scroll" id="audit-scroll">
+        <div class="audit-empty" id="audit-empty">No actions recorded yet.</div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="{{ url_for('static', filename='vendor/three.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='hero3d.js') }}"></script>
+  <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='kavach-shared.js') }}"></script>
+  <script src="{{ url_for('static', filename='analyst.js') }}"></script>
+</body>
+</html>
