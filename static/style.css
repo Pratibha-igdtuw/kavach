@@ -1487,7 +1487,42 @@ body.perf-mode svg {
 .alert-row-meta { font-size: 11px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
 .alert-risk { font-family: 'Cinzel', serif; font-size: 20px; text-align: right; min-width: 46px; }
 .alert-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-.alert-actions .mini-btn { white-space: nowrap; }
+.alert-actions .mini-btn {
+  white-space: nowrap;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.alert-actions .mini-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* "Investigate" button — no color/background was ever defined for this
+   class, so it fell back to unreliable browser default styling. */
+.investigate-btn {
+  border: 1px solid rgba(58,92,255,0.35);
+  background: rgba(58,92,255,0.08);
+  color: #8ea2ff;
+}
+.investigate-btn:hover:not(:disabled) {
+  background: rgba(58,92,255,0.18);
+  border-color: rgba(58,92,255,0.6);
+}
+
+/* Inline "Contain" button in the alert queue — this is the one rendering
+   as invisible white-on-white. Same danger/urgent styling as the rest of
+   the app's containment actions. */
+.contain-inline-btn {
+  border: 1px solid rgba(192,57,43,0.35);
+  background: rgba(192,57,43,0.08);
+  color: #e5867a;
+}
+.contain-inline-btn:hover:not(:disabled) {
+  background: rgba(192,57,43,0.18);
+  border-color: rgba(192,57,43,0.6);
+}
 .alert-empty { padding: 30px 10px; text-align: center; color: var(--text-dim); font-size: 13px; }
 
 /* ---------- risk comparison bars (Manager) ---------- */
