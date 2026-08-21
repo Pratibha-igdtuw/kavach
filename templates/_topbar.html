@@ -1,0 +1,27 @@
+<header class="topbar">
+  <div class="brand">
+    <div class="crest">🛡</div>
+    <div class="brand-text">
+      <h1>KAVACH</h1>
+      <span>{{ workspace_title }}</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="session-pill" id="session-pill">
+      <span class="role-badge role-{{ role }}">{{ role_display }}</span>
+      <span class="session-name">{{ display_name }}</span>
+      <a class="logout-link" href="{{ url_for('logout') }}" title="Sign out">⏻</a>
+    </div>
+    {% if show_connection_status %}
+    <div class="status-pill" id="global-status">
+      <span class="dot"></span>
+      <span id="global-status-text">MONITORING</span>
+    </div>
+    {% endif %}
+  </div>
+</header>
+<nav class="role-nav">
+  {% for anchor, label in nav_items %}
+  <a href="#{{ anchor }}">{{ label }}</a>
+  {% endfor %}
+</nav>

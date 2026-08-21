@@ -205,6 +205,24 @@ def alert_counts_by_status():
         return {r["status"]: r["cnt"] for r in rows}
 
 
+def alert_kpis():
+    """Summary counts for the Analyst SOC console KPI row: critical (open,
+    high-severity), new, and active (not yet resolved) alerts, all drawn
+    from the same triage-eligible `log` rows the alert queue already uses."""
+    with _conn() as c:
+        critical = c.execute(
+            "SELECT COUNT(*) as cnt FROM log WHERE status IS NOT NULL "
+            "AND status != 'resolved' AND severity = 'high'"
+        ).fetchone()["cnt"]
+        new = c.execute(
+            "SELECT COUNT(*) as cnt FROM log WHERE status = 'new'"
+        ).fetchone()["cnt"]
+        active = c.execute(
+            "SELECT COUNT(*) as cnt FROM log WHERE status IS NOT NULL AND status != 'resolved'"
+        ).fetchone()["cnt"]
+        return {"critical": critical, "new": new, "active_incidents": active}
+
+
 def sector_history(sector, limit=120):
     with _conn() as c:
         rows = c.execute(
@@ -399,6 +417,18 @@ def audit_log_filtered(actor=None, sector=None, date_from=None, date_to=None, li
             f"SELECT time_str as time, actor, role, action, sector, detail "
             f"FROM audit_log {where} ORDER BY id DESC LIMIT ?",
             (*params, limit),
+def recent_audit_by_actions(actions, limit=20):
+    """Audit entries whose `action` is in the given list, most recent first.
+    Used by the Admin console's "Recent Admin Actions" panel so it only
+    shows configuration/governance events, not SOC response actions."""
+    if not actions:
+        return []
+    placeholders = ",".join("?" for _ in actions)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT time_str as time, actor, role, action, sector, detail "
+            f"FROM audit_log WHERE action IN ({placeholders}) ORDER BY id DESC LIMIT ?",
+            (*actions, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 

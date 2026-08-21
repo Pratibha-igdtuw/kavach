@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAVACH — Security Posture</title>
+<link href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-role="{{ role }}">
+
+  <div class="ambient-glow glow-a"></div>
+  <div class="ambient-glow glow-b"></div>
+  <div class="ambient-glow glow-c"></div>
+  <div class="grid-overlay"></div>
+
+  {% set workspace_title = 'Security Posture' %}
+  {% set show_connection_status = false %}
+  {% set nav_items = [
+    ('overview', 'Security Overview'), ('risk', 'Risk Posture'), ('incidents', 'Incidents'),
+    ('threat-landscape', 'Threat Landscape'), ('business-impact', 'Business Impact'),
+    ('recommendations', 'Recommendations'), ('trends', 'Trends'), ('reports', 'Reports')
+  ] %}
+  {% include "_topbar.html" %}
+
+  <div class="console-header" id="overview">
+    <div class="console-title">KAVACH Security Posture</div>
+    <div class="console-tagline">Assess → Prioritize → Decide → Report</div>
+  </div>
+
+  <main class="console-main">
+
+    <section class="exec-summary-panel glass-panel reveal">
+      <h2 class="panel-title">Security Posture <span class="panel-sub">— org-wide risk snapshot</span></h2>
+      <div class="exec-summary-grid">
+        <div class="exec-metric">
+          <div class="exec-metric-label">Overall Risk</div>
+          <div class="exec-metric-value" id="posture-org-risk">—</div>
+          <div class="exec-metric-status" id="posture-status-label">Awaiting data…</div>
+        </div>
+        <div class="exec-metric">
+          <div class="exec-metric-label">Critical Incidents</div>
+          <div class="exec-metric-value" id="posture-critical">0</div>
+          <div class="exec-metric-status">Open, high-severity</div>
+        </div>
+        <div class="exec-metric">
+          <div class="exec-metric-label">Active Incidents</div>
+          <div class="exec-metric-value" id="posture-active">0</div>
+          <div class="exec-metric-status">Not yet resolved</div>
+        </div>
+        <div class="exec-metric">
+          <div class="exec-metric-label">Incidents (24h)</div>
+          <div class="exec-metric-value" id="posture-incidents-24h">0</div>
+          <div class="exec-metric-status">Confirmed anomalies detected</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="glass-panel reveal" id="risk">
+      <h2 class="panel-title">Risk by Sector <span class="panel-sub">— comparative organizational risk</span></h2>
+      <div class="risk-compare-list" id="risk-compare-list"></div>
+    </section>
+
+    <section class="glass-panel reveal" id="incidents">
+      <h2 class="panel-title">Incident Summary <span class="panel-sub">— high-level, view-only</span></h2>
+      <div class="alert-queue" id="incident-summary-list" style="margin-top:12px;"></div>
+      <div class="alert-empty" id="incident-summary-empty">No incidents recorded yet.</div>
+    </section>
+
+    <section class="siege-map-panel glass-panel reveal" id="threat-landscape">
+      <h2 class="panel-title">Cross-Sector Threat Landscape <span class="panel-sub">— strategic view of attack propagation</span></h2>
+      <svg id="siege-map" viewBox="0 0 600 260" preserveAspectRatio="xMidYMid meet">
+        <line id="edge-power_grid-hospital" class="edge" x1="150" y1="130" x2="450" y2="70"></line>
+        <line id="edge-bank-hospital" class="edge" x1="150" y1="220" x2="450" y2="70"></line>
+        <line id="edge-power_grid-bank" class="edge" x1="150" y1="130" x2="150" y2="220"></line>
+        <g id="node-power_grid" class="node-group">
+          <circle cx="150" cy="130" r="34" class="node-circle"></circle>
+          <text x="150" y="135" class="node-label">⚡</text>
+          <text x="150" y="185" class="node-title">Power Grid</text>
+        </g>
+        <g id="node-bank" class="node-group">
+          <circle cx="150" cy="220" r="34" class="node-circle"></circle>
+          <text x="150" y="225" class="node-label">🏦</text>
+          <text x="150" y="270" class="node-title">Bank</text>
+        </g>
+        <g id="node-hospital" class="node-group">
+          <circle cx="450" cy="70" r="34" class="node-circle"></circle>
+          <text x="450" y="75" class="node-label">🏥</text>
+          <text x="450" y="125" class="node-title">Hospital</text>
+        </g>
+      </svg>
+    </section>
+
+    <section class="glass-panel reveal" id="business-impact">
+      <h2 class="panel-title">Business Impact <span class="panel-sub">— translated from live sector telemetry</span></h2>
+      <div class="impact-grid" id="impact-grid"></div>
+    </section>
+
+    <section class="glass-panel reveal" id="recommendations">
+      <h2 class="panel-title">Recommended Action <span class="panel-sub">— generated from current risk &amp; propagation data</span></h2>
+      <div class="recommend-list" id="recommend-list"></div>
+    </section>
+
+    <section class="history-panel glass-panel reveal" id="trends">
+      <h2 class="panel-title">Risk Trend <span class="panel-sub">— 24h / trailing trend per sector</span></h2>
+      <div class="history-chart-wrap"><canvas id="history-chart" height="90"></canvas></div>
+      <div class="history-legend" id="history-legend"></div>
+    </section>
+
+    <section class="glass-panel reveal" id="reports">
+      <h2 class="panel-title">Reports <span class="panel-sub">— generate a report for a sector</span></h2>
+      <div class="report-row" style="margin-top:12px;">
+        <span class="report-label">Sector:</span>
+        <select class="log-filter" id="report-sector">
+          {% for s in sectors %}<option value="{{ s }}">{{ sector_labels.get(s, s) }}</option>{% endfor %}
+        </select>
+        <a class="export-btn" id="report-btn" href="#" target="_blank">📄 Markdown</a>
+        <a class="export-btn" id="report-btn-pdf" href="#" target="_blank">📑 PDF</a>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='kavach-shared.js') }}"></script>
+  <script src="{{ url_for('static', filename='manager.js') }}"></script>
+</body>
+</html>

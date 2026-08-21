@@ -15,7 +15,7 @@ import time
 from flask import Flask, render_template, request, session, redirect, url_for, jsonify, Response
 from werkzeug.security import generate_password_hash
 
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, join_room, leave_room
 from flask_wtf import CSRFProtect
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -171,11 +171,43 @@ contained = {s: 0 for s in SECTORS}
 # (used for the incident report)
 was_contained = {s: False for s in SECTORS}
 
+# ---- lightweight service-health tracking for the Admin "System Status"
+# panel. Updated by the background loop / socket connect-disconnect
+# handlers rather than faked -- these reflect what's actually running in
+# this process.
+system_health_state = {
+    "last_tick_ts": time.time(),
+    "connected_clients": 0,
+}
+
+# Static per-metric baselines the detector was trained against (mirrors
+# simulator.METRIC_BASELINES) -- exposed read-only so the Security Manager
+# dashboard can translate live metrics into plain-English business impact
+# without duplicating detector internals or fabricating numbers.
+from simulator import METRIC_BASELINES
+
+# Audit action labels that belong on the Admin console's "Recent Admin
+# Actions" panel -- configuration/governance events only, never SOC
+# response actions (those live on the Analyst audit trail instead).
+ADMIN_AUDIT_ACTIONS = [
+    "Created user",
+    "Deleted user",
+    "Reset password",
+    "Updated detection thresholds",
+    "Reset demo data",
+]
+
+
+# Socket.IO room joined only by connections whose role can view the audit
+# trail (SOC Analyst / System Administrator) -- see on_connect() below.
+AUDIT_ROOM = "audit_viewers"
+
 
 def log_audit_and_emit(action, sector=None, detail=""):
-    """Record an audit entry (who did what, when) and push it to every
-    connected client so the audit panel updates live for both analyst and
-    executive viewers."""
+    """Record an audit entry (who did what, when) and push it live to
+    connected clients whose role is actually permitted to see the audit
+    trail -- Security Managers don't get audit data pushed to their
+    browser at all, not just hidden in the UI."""
     actor = session.get("display_name", "Unknown")
     role = session.get("role", "unknown")
     storage.insert_audit(actor, role, action, sector=sector, detail=detail)
@@ -187,7 +219,7 @@ def log_audit_and_emit(action, sector=None, detail=""):
         "sector": sector,
         "detail": detail,
     }
-    socketio.emit("audit_log", {"entries": [entry]})
+    socketio.emit("audit_log", {"entries": [entry]}, room=AUDIT_ROOM)
 
 
 def _risk_to_severity_level(risk_score):
@@ -243,6 +275,7 @@ def compute_exec_summary(sectors_payload):
 def background_loop():
     """Continuously generate telemetry, score it, propagate, persist, and push to clients."""
     while True:
+        system_health_state["last_tick_ts"] = time.time()
         payload = {"sectors": {}, "propagation": [], "timestamp": time.time()}
         base_scores = {}
         anomaly_flags = {}
@@ -386,16 +419,75 @@ def logout():
     return redirect(url_for("login"))
 
 
-# ---------------- main dashboard ----------------
+# ---------------- role-specific dashboards ----------------
+# Each role lands on a genuinely different workspace over the same
+# underlying KAVACH data -- different navigation, KPIs, primary widgets,
+# and actions, not one dashboard with cards hidden by role.
 
 @app.route("/")
 @auth.login_required
 def index():
+    return redirect(url_for(auth.current_home_endpoint()))
+
+
+@app.route("/analyst")
+@auth.permission_required("view_alerts")
+def analyst_dashboard():
+    """SOC console -- operational, real-time, alert-centric, response-focused."""
     return render_template(
-        "index.html",
+        "analyst.html",
         role=auth.current_role(),
+        role_display=auth.current_role_display(),
         display_name=auth.current_name(),
+        kpis=storage.alert_kpis(),
+        contained_count=sum(1 for v in contained.values() if v > 0),
+        sectors=SECTORS,
+        sector_labels=SECTOR_LABEL,
     )
+
+
+@app.route("/manager")
+@auth.permission_required("view_security_posture")
+def manager_dashboard():
+    """Security posture console -- strategic, organizational, risk-centric,
+    decision-focused. No operational response controls live here."""
+    return render_template(
+        "manager.html",
+        role=auth.current_role(),
+        role_display=auth.current_role_display(),
+        display_name=auth.current_name(),
+        sectors=SECTORS,
+        sector_labels=SECTOR_LABEL,
+        sector_weights=SECTOR_WEIGHTS,
+    )
+
+
+@app.route("/admin")
+@auth.permission_required("view_system_health")
+def admin_dashboard():
+    """Admin console -- technical, configuration-centric, system-health-
+    focused. Deliberately NOT analyst+manager+admin combined: no SOC
+    response actions, no risk/posture widgets live here."""
+    replay_status = {s: simulator.is_replaying(s) for s in SECTORS}
+    return render_template(
+        "admin.html",
+        role=auth.current_role(),
+        role_display=auth.current_role_display(),
+        display_name=auth.current_name(),
+        users=storage.list_users(),
+        roles=auth.ROLES,
+        role_display_map=auth.ROLE_DISPLAY,
+        error=request.args.get("error"),
+        success=request.args.get("success"),
+        sectors=SECTORS,
+        sector_labels=SECTOR_LABEL,
+        thresholds=sector_thresholds,
+        replay_status=replay_status,
+        secret_key_from_env=bool(os.environ.get("SECRET_KEY")),
+        webhook_configured=bool(notifier.WEBHOOK_URL),
+        replay_sectors=[SECTOR_LABEL.get(s, s) for s in REPLAY_FILES.keys()],
+    )
+
 
 
 @app.route("/api/history/<sector>")
@@ -461,13 +553,87 @@ def api_analyst_queue():
 
 
 @app.route("/api/audit")
-@auth.login_required
+@auth.permission_required("view_audit_logs", "view_system_audit_logs")
 def api_audit():
     return jsonify(storage.recent_audit(50))
 
 
-@app.route("/report/<sector>")
+@app.route("/api/incident-kpis")
+@auth.permission_required("view_alerts", "view_incident_summary")
+def api_incident_kpis():
+    """Live alert/incident counts -- powers the Analyst KPI row and the
+    Manager security-posture summary from the same underlying triage data."""
+    kpis = storage.alert_kpis()
+    kpis["contained_sectors"] = sum(1 for v in contained.values() if v > 0)
+    kpis["incidents_24h"] = storage.incident_count_since(INCIDENT_WINDOW_SECONDS)
+    return jsonify(kpis)
+
+
+@app.route("/api/metrics/baselines")
 @auth.login_required
+def api_metric_baselines():
+    """Read-only normal-condition baselines (mean, std) per telemetry
+    metric -- lets the Security Manager dashboard translate live sector
+    metrics into plain-English business impact without re-deriving or
+    faking detector internals."""
+    return jsonify(METRIC_BASELINES)
+
+
+@app.route("/api/admin/system-health")
+@auth.permission_required("view_system_health")
+def api_admin_system_health():
+    """Live health snapshot of KAVACH's own backend services, for the Admin
+    console's System Status panel -- derived from real process state, not
+    hardcoded 'all green' values."""
+    now = time.time()
+    seconds_since_tick = now - system_health_state["last_tick_ts"]
+    detection_status = "ONLINE" if seconds_since_tick < 5 else (
+        "WARNING" if seconds_since_tick < 15 else "OFFLINE"
+    )
+
+    try:
+        storage.recent_audit(1)
+        db_status = "ONLINE"
+    except Exception:
+        db_status = "ERROR"
+
+    notifier_status = "ONLINE" if notifier.WEBHOOK_URL else "WARNING"
+    notifier_detail = "Webhook configured" if notifier.WEBHOOK_URL else "Optional webhook not configured"
+
+    return jsonify({
+        "services": [
+            {"name": "Detection Engine", "status": detection_status,
+             "detail": f"Last scoring tick {seconds_since_tick:.1f}s ago"},
+            {"name": "Telemetry Simulator", "status": detection_status,
+             "detail": "Synthetic + CSV replay sources" if any(
+                 simulator.is_replaying(s) for s in SECTORS) else "Synthetic generation"},
+            {"name": "Database (SQLite)", "status": db_status, "detail": "kavach.db"},
+            {"name": "Socket.IO Real-Time Service", "status": "ONLINE",
+             "detail": f"{system_health_state['connected_clients']} client(s) connected"},
+            {"name": "Notification Service", "status": notifier_status, "detail": notifier_detail},
+        ],
+    })
+
+
+@app.route("/api/admin/summary")
+@auth.permission_required("view_system_health")
+def api_admin_summary():
+    """Dashboard-friendly snapshot for the Admin console: user/role counts,
+    current thresholds, and recent governance actions."""
+    users = storage.list_users()
+    role_counts = {r: 0 for r in auth.ROLES}
+    for u in users:
+        role_counts[u["role"]] = role_counts.get(u["role"], 0) + 1
+    return jsonify({
+        "total_users": len(users),
+        "role_counts": role_counts,
+        "thresholds": sector_thresholds,
+        "recent_actions": storage.recent_audit_by_actions(ADMIN_AUDIT_ACTIONS, limit=15),
+    })
+
+
+@app.route("/report/<sector>")
+@auth.permission_required("generate_incident_reports", "generate_reports")
 def report(sector):
     if sector not in SECTORS:
         return jsonify({"error": "unknown sector"}), 404
@@ -481,7 +647,7 @@ def report(sector):
 
 
 @app.route("/report/<sector>/pdf")
-@auth.login_required
+@auth.permission_required("generate_incident_reports", "generate_reports")
 def report_pdf(sector):
     if sector not in SECTORS:
         return jsonify({"error": "unknown sector"}), 404
@@ -583,10 +749,10 @@ def board_report_pdf():
     )
 
 
-# ---------------- admin routes (user management) ----------------
+# ---------------- admin routes (system configuration & governance) ----------------
 
 @app.route("/admin/reset-demo", methods=["POST"])
-@auth.admin_required
+@auth.permission_required("reset_demo_environment")
 def admin_reset_demo():
     """Wipes the anomaly log, risk history, and audit trail, and clears any
     active containment/detector state — so the dashboard can be handed to
@@ -601,177 +767,26 @@ def admin_reset_demo():
     detectors = {s: SectorDetector() for s in SECTORS}
     log_audit_and_emit("Reset demo data")
     socketio.emit("demo_reset", {})
-    return redirect(url_for("admin_panel", success="Demo data cleared — log, risk history, and audit trail reset."))
-
-
-@app.route("/admin/detector/<sector>/retrain", methods=["POST"])
-@auth.admin_required
-def admin_retrain_detector(sector):
-    """Granular version of what 'Reset Demo' does to the model: refits just
-    this sector's IsolationForest on fresh synthetic 'normal' traffic,
-    without touching the other sectors, the anomaly log, risk history, or
-    audit trail. Containment/false-positive state for this sector resets
-    too, since a freshly retrained model shouldn't inherit the old model's
-    feedback bias."""
-    if sector not in SECTORS:
-        return redirect(url_for("admin_panel", error="Unknown sector."))
-    detectors[sector] = SectorDetector()
-    contained[sector] = 0
-    was_contained[sector] = False
-    log_audit_and_emit("Retrained detector", sector=sector)
-    socketio.emit("detector_retrained", {"sector": sector})
-    return redirect(url_for("admin_panel", success=f"Detector retrained for {SECTOR_LABEL.get(sector, sector)}."))
-
-
-@app.route("/api/admin/health")
-@auth.admin_required
-def api_admin_health():
-    """Per-sector system health snapshot for the admin panel: data source
-    (replay vs synthetic), when each detector was last (re)trained, and
-    whether outbound webhook notifications are configured."""
-    sectors_health = {}
-    for sector in SECTORS:
-        sectors_health[sector] = {
-            "data_source": "replay" if simulator.is_replaying(sector) else "synthetic",
-            "detector_trained_at": detectors[sector].trained_at,
-            "contained": contained[sector] > 0,
-        }
-    return jsonify({
-        "sectors": sectors_health,
-        "webhook": notifier.current_config(),
-    })
-
-
-@app.route("/admin/notifier/test", methods=["POST"])
-@auth.admin_required
-def admin_notifier_test():
-    ok, message = notifier.send_test_alert()
-    log_audit_and_emit("Sent test webhook alert", detail=message)
-    if ok:
-        return redirect(url_for("admin_panel", success=message))
-    return redirect(url_for("admin_panel", error=message))
-
-
-@app.route("/admin/notifier/config", methods=["POST"])
-@auth.admin_required
-def admin_notifier_config():
-    webhook_url = request.form.get("webhook_url", "")
-    webhook_kind = request.form.get("webhook_kind", "slack")
-    if webhook_url and not (webhook_url.startswith("http://") or webhook_url.startswith("https://")):
-        return redirect(url_for("admin_panel", error="Webhook URL must start with http:// or https://"))
-
-    actor = session.get("display_name", "Unknown")
-    notifier.set_webhook_config(webhook_url, webhook_kind, actor)
-    log_audit_and_emit(
-        "Updated notification config",
-        detail=f"kind={webhook_kind}, url={'set' if webhook_url else 'cleared'}",
-    )
-    return redirect(url_for("admin_panel", success="Notification config updated."))
-
-
-@app.route("/admin/audit/export")
-@auth.admin_required
-def admin_audit_export():
-    """CSV export of the (optionally filtered) audit trail — compliance-
-    grade access that the analyst's live-scroll panel doesn't offer."""
-    actor = request.args.get("actor") or None
-    sector = request.args.get("sector") or None
-    date_from = request.args.get("date_from") or None
-    date_to = request.args.get("date_to") or None
-    entries = storage.audit_log_filtered(
-        actor=actor, sector=sector, date_from=date_from, date_to=date_to, limit=5000
-    )
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["time", "actor", "role", "action", "sector", "detail"])
-    for e in entries:
-        writer.writerow([e["time"], e["actor"], e["role"], e["action"], e["sector"] or "", e["detail"] or ""])
-
-    filename = f"kavach_audit_{int(time.time())}.csv"
-    return Response(
-        buf.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
-
-
-@app.route("/api/admin/summary")
-@auth.admin_required
-def api_admin_summary():
-    """Lightweight, dashboard-friendly snapshot for the Admin quick-panel —
-    keeps admins from having to open /admin just to see user/threshold state."""
-    users = storage.list_users()
-    role_counts = {r: 0 for r in auth.ROLES}
-    for u in users:
-        role_counts[u["role"]] = role_counts.get(u["role"], 0) + 1
-    return jsonify({
-        "total_users": len(users),
-        "role_counts": role_counts,
-        "thresholds": sector_thresholds,
-    })
-
-
-@app.route("/admin")
-@auth.admin_required
-def admin_panel():
-    audit_filters = {
-        "actor": request.args.get("actor", ""),
-        "sector": request.args.get("sector", ""),
-        "date_from": request.args.get("date_from", ""),
-        "date_to": request.args.get("date_to", ""),
-    }
-    audit_entries = storage.audit_log_filtered(
-        actor=audit_filters["actor"] or None,
-        sector=audit_filters["sector"] or None,
-        date_from=audit_filters["date_from"] or None,
-        date_to=audit_filters["date_to"] or None,
-        limit=200,
-    )
-    sectors_health = {
-        s: {
-            "data_source": "replay" if simulator.is_replaying(s) else "synthetic",
-            "detector_trained_at": detectors[s].trained_at,
-            "detector_trained_label": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(detectors[s].trained_at)),
-            "contained": contained[s] > 0,
-        }
-        for s in SECTORS
-    }
-    return render_template(
-        "admin.html",
-        role=auth.current_role(),
-        display_name=auth.current_name(),
-        users=storage.list_users(),
-        roles=auth.ROLES,
-        error=request.args.get("error"),
-        success=request.args.get("success"),
-        sectors=SECTORS,
-        sector_labels=SECTOR_LABEL,
-        thresholds=sector_thresholds,
-        audit_entries=audit_entries,
-        audit_filters=audit_filters,
-        sectors_health=sectors_health,
-        webhook_config=notifier.current_config(),
-    )
+    return redirect(url_for("admin_dashboard", success="Demo data cleared — log, risk history, and audit trail reset."))
 
 
 @app.route("/admin/thresholds/update", methods=["POST"])
-@auth.admin_required
+@auth.permission_required("configure_thresholds")
 def admin_update_thresholds():
     sector = request.form.get("sector", "")
     if sector not in SECTORS:
-        return redirect(url_for("admin_panel", error="Unknown sector."))
+        return redirect(url_for("admin_dashboard", error="Unknown sector."))
 
     try:
         alert_threshold = float(request.form.get("alert_threshold", ""))
         critical_threshold = float(request.form.get("critical_threshold", ""))
     except ValueError:
-        return redirect(url_for("admin_panel", error="Thresholds must be numbers."))
+        return redirect(url_for("admin_dashboard", error="Thresholds must be numbers."))
 
     if not (0 <= alert_threshold <= 100 and 0 <= critical_threshold <= 100):
-        return redirect(url_for("admin_panel", error="Thresholds must be between 0 and 100."))
+        return redirect(url_for("admin_dashboard", error="Thresholds must be between 0 and 100."))
     if critical_threshold <= alert_threshold:
-        return redirect(url_for("admin_panel", error="Critical threshold must be higher than the alert threshold."))
+        return redirect(url_for("admin_dashboard", error="Critical threshold must be higher than the alert threshold."))
 
     actor = session.get("display_name", "Unknown")
     storage.update_threshold(sector, alert_threshold, critical_threshold, actor)
@@ -782,11 +797,11 @@ def admin_update_thresholds():
         detail=f"alert>{alert_threshold}, critical>{critical_threshold}",
     )
     socketio.emit("thresholds_updated", {"sector": sector, **sector_thresholds[sector]})
-    return redirect(url_for("admin_panel", success=f"Thresholds updated for {SECTOR_LABEL.get(sector, sector)}."))
+    return redirect(url_for("admin_dashboard", success=f"Thresholds updated for {SECTOR_LABEL.get(sector, sector)}."))
 
 
 @app.route("/admin/users/add", methods=["POST"])
-@auth.admin_required
+@auth.permission_required("manage_users")
 def admin_add_user():
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
@@ -794,64 +809,77 @@ def admin_add_user():
     display_name = request.form.get("display_name", "").strip() or username
 
     if not username or not password or role not in auth.ROLES:
-        return redirect(url_for("admin_panel", error="All fields are required and role must be valid."))
+        return redirect(url_for("admin_dashboard", error="All fields are required and role must be valid."))
     if storage.get_user(username):
-        return redirect(url_for("admin_panel", error=f"Username '{username}' already exists."))
+        return redirect(url_for("admin_dashboard", error=f"Username '{username}' already exists."))
 
     storage.add_user(username, generate_password_hash(password), role, display_name)
     log_audit_and_emit("Created user", detail=f"{username} ({role})")
-    return redirect(url_for("admin_panel", success=f"User '{username}' created."))
+    return redirect(url_for("admin_dashboard", success=f"User '{username}' created."))
 
 
 @app.route("/admin/users/<username>/delete", methods=["POST"])
-@auth.admin_required
+@auth.permission_required("manage_users")
 def admin_delete_user(username):
     target = storage.get_user(username)
     if not target:
-        return redirect(url_for("admin_panel", error="User not found."))
+        return redirect(url_for("admin_dashboard", error="User not found."))
     if username == session.get("username"):
-        return redirect(url_for("admin_panel", error="You can't delete your own account."))
+        return redirect(url_for("admin_dashboard", error="You can't delete your own account."))
     if target["role"] == "admin" and storage.count_users_by_role("admin") <= 1:
-        return redirect(url_for("admin_panel", error="Can't delete the last remaining admin."))
+        return redirect(url_for("admin_dashboard", error="Can't delete the last remaining admin."))
 
     storage.delete_user(username)
     log_audit_and_emit("Deleted user", detail=username)
-    return redirect(url_for("admin_panel", success=f"User '{username}' deleted."))
+    return redirect(url_for("admin_dashboard", success=f"User '{username}' deleted."))
 
 
 @app.route("/admin/users/<username>/reset-password", methods=["POST"])
-@auth.admin_required
+@auth.permission_required("reset_passwords")
 def admin_reset_password(username):
     new_password = request.form.get("new_password", "")
     if not storage.get_user(username):
-        return redirect(url_for("admin_panel", error="User not found."))
+        return redirect(url_for("admin_dashboard", error="User not found."))
     if not new_password:
-        return redirect(url_for("admin_panel", error="New password can't be empty."))
+        return redirect(url_for("admin_dashboard", error="New password can't be empty."))
 
     storage.update_password(username, generate_password_hash(new_password))
     log_audit_and_emit("Reset password", detail=username)
-    return redirect(url_for("admin_panel", success=f"Password reset for '{username}'."))
+    return redirect(url_for("admin_dashboard", success=f"Password reset for '{username}'."))
 
 
 # ---------------- socket events ----------------
+# Every state-changing event below re-checks the actor's permission
+# server-side via auth.has_permission(); a client simply not rendering a
+# button is never treated as the authorization boundary.
 
 @socketio.on("connect")
 def on_connect():
     if "role" not in session:
         return False  # reject unauthenticated socket connections
+
+    system_health_state["connected_clients"] += 1
+
     socketio.emit(
         "log_history",
         {"log": storage.recent_logs(30)},
         to=request.sid,
     )
-    socketio.emit(
-        "audit_log",
-        {"entries": storage.recent_audit(50)},
-        to=request.sid,
-    )
+
+    # Only clients whose role can actually view the audit trail join the
+    # room that receives it -- both the initial history and live updates.
+    if auth.has_permission("view_audit_logs") or auth.has_permission("view_system_audit_logs"):
+        join_room(AUDIT_ROOM)
+        socketio.emit(
+            "audit_log",
+            {"entries": storage.recent_audit(50)},
+            to=request.sid,
+        )
+
     socketio.emit(
         "session_info",
-        {"role": session.get("role"), "name": session.get("display_name")},
+        {"role": session.get("role"), "role_display": auth.current_role_display(),
+         "name": session.get("display_name")},
         to=request.sid,
     )
     socketio.emit(
@@ -861,9 +889,14 @@ def on_connect():
     )
 
 
+@socketio.on("disconnect")
+def on_disconnect():
+    system_health_state["connected_clients"] = max(0, system_health_state["connected_clients"] - 1)
+
+
 @socketio.on("trigger_attack")
 def on_trigger_attack(data):
-    if session.get("role") not in ("analyst", "admin"):
+    if not auth.has_permission("trigger_demo_attack"):
         return
     sector = (data or {}).get("sector")
     attack_type = (data or {}).get("attack_type")
@@ -883,7 +916,7 @@ def on_trigger_attack(data):
 
 @socketio.on("contain_sector")
 def on_contain_sector(data):
-    if session.get("role") not in ("analyst", "admin"):
+    if not auth.has_permission("contain_sector"):
         return
     sector = (data or {}).get("sector")
     if sector in SECTORS:
@@ -903,7 +936,7 @@ def on_contain_sector(data):
 
 @socketio.on("mark_false_positive")
 def on_mark_false_positive(data):
-    if session.get("role") not in ("analyst", "admin"):
+    if not auth.has_permission("mark_false_positive"):
         return
     sector = (data or {}).get("sector")
     if sector in SECTORS:
@@ -923,7 +956,7 @@ def on_mark_false_positive(data):
 
 @socketio.on("update_alert_status")
 def on_update_alert_status(data):
-    if session.get("role") not in ("analyst", "admin"):
+    if not auth.has_permission("update_alert_status"):
         return
     log_id = (data or {}).get("id")
     status = (data or {}).get("status")

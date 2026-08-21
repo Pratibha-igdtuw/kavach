@@ -3,23 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KAVACH — Admin</title>
+<title>KAVACH — Admin Console</title>
 <link href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
-  .admin-wrap { max-width: 880px; margin: 0 auto; padding: 32px 24px 60px; position: relative; z-index: 1; }
-  .admin-topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
-  .admin-title { font-family: 'Cinzel', serif; font-size: 22px; letter-spacing: 1.5px;
-    background: linear-gradient(180deg, var(--gold-bright), var(--gold));
-    -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .admin-nav { display: flex; align-items: center; gap: 14px; }
-  .admin-nav a { color: var(--text-dim); text-decoration: none; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
-  .admin-nav a:hover { color: var(--gold-bright); }
-  .admin-panel { padding: 22px 24px; margin-bottom: 22px; }
-  .admin-flash { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 18px; }
+  .admin-flash { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 4px; }
   .admin-flash.error { background: rgba(192,57,43,0.15); color: #e57368; border: 1px solid rgba(192,57,43,0.35); }
   .admin-flash.success { background: rgba(63,167,150,0.15); color: var(--teal); border: 1px solid rgba(63,167,150,0.35); }
-  .admin-form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .admin-form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-top: 14px; }
   .admin-field { display: flex; flex-direction: column; gap: 6px; }
   .admin-field label { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1px;
     text-transform: uppercase; color: var(--text-dim); }
@@ -37,7 +28,7 @@
   .admin-submit:hover { background: rgba(201,162,39,0.22); }
   .admin-submit.danger { border-color: rgba(192,57,43,0.4); background: rgba(192,57,43,0.12); color: #e57368; }
   .admin-submit.danger:hover { background: rgba(192,57,43,0.22); }
-  table.admin-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.admin-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
   table.admin-table th { text-align: left; color: var(--text-dim); font-family: 'JetBrains Mono', monospace;
     font-size: 10px; letter-spacing: 1px; text-transform: uppercase; padding: 8px 10px; border-bottom: 1px solid var(--panel-border); }
   table.admin-table td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: middle; }
@@ -66,22 +57,32 @@
   .audit-table-wrap { max-height: 420px; overflow-y: auto; border: 1px solid var(--panel-border); border-radius: 8px; }
   table.admin-table.audit-table th { position: sticky; top: 0; background: #14161c; }
   .notifier-status { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; font-size: 13px; color: var(--text-dim); }
+  .config-info-row { display: flex; justify-content: space-between; font-size: 13px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .config-info-row:last-child { border-bottom: none; }
+  .config-info-row .k { color: var(--text-dim); }
 </style>
 </head>
 <body data-role="{{ role }}">
+
   <div class="ambient-glow glow-a"></div>
   <div class="ambient-glow glow-b"></div>
   <div class="grid-overlay"></div>
 
-  <div class="admin-wrap">
-    <div class="admin-topbar">
-      <div class="admin-title">🛡 KAVACH — Admin</div>
-      <div class="admin-nav">
-        <span class="session-name">{{ display_name }}</span>
-        <a href="{{ url_for('index') }}">← Dashboard</a>
-        <a href="{{ url_for('logout') }}">Sign out</a>
-      </div>
-    </div>
+  {% set workspace_title = 'Admin Console' %}
+  {% set show_connection_status = false %}
+  {% set nav_items = [
+    ('overview', 'System Overview'), ('users', 'Users & Roles'), ('detection-rules', 'Detection Rules'),
+    ('system-health', 'System Health'), ('audit', 'Audit Logs'),
+    ('configuration', 'Configuration'), ('maintenance', 'Maintenance')
+  ] %}
+  {% include "_topbar.html" %}
+
+  <div class="console-header" id="overview">
+    <div class="console-title">KAVACH Admin Console</div>
+    <div class="console-tagline">Configure → Maintain → Govern</div>
+  </div>
+
+  <main class="console-main">
 
     {% if error %}<div class="admin-flash error">{{ error }}</div>{% endif %}
     {% if success %}<div class="admin-flash success">{{ success }}</div>{% endif %}
@@ -166,13 +167,20 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="admin-submit danger">🔄 Reset Demo Data</button>
       </form>
+    <section class="glass-panel reveal" id="system-health">
+      <h2 class="panel-title">System Status <span class="panel-sub">— live health of KAVACH's own services</span></h2>
+      <div class="status-list" id="system-status-list">
+        <div class="status-row"><span class="status-row-name">Loading…</span></div>
+      </div>
     </section>
 
-    <section class="glass-panel admin-panel">
-      <h2 class="panel-title">Add User <span class="panel-sub">— create an analyst, executive, or admin account</span></h2>
-      <form method="POST" action="{{ url_for('admin_add_user') }}" style="margin-top: 14px;">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div class="admin-form-row">
+    <section class="glass-panel reveal" id="users">
+      <h2 class="panel-title">Users &amp; Roles <span class="panel-sub">— {{ users|length }} total accounts</span></h2>
+      <div class="role-count-grid" id="role-count-grid"></div>
+
+      <div class="admin-form-row">
+        <form method="POST" action="{{ url_for('admin_add_user') }}" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="admin-field">
             <label for="username">Username</label>
             <input type="text" id="username" name="username" required autocomplete="off">
@@ -189,21 +197,46 @@
             <label for="role">Role</label>
             <select id="role" name="role" required>
               {% for r in roles %}
-              <option value="{{ r }}">{{ r|capitalize }}</option>
+              <option value="{{ r }}">{{ role_display_map.get(r, r) }}</option>
               {% endfor %}
             </select>
           </div>
           <button type="submit" class="admin-submit">+ Create Account</button>
-        </div>
-      </form>
+        </form>
+      </div>
+
+      <table class="admin-table">
+        <thead><tr><th>Username</th><th>Display Name</th><th>Role</th><th>Actions</th></tr></thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td>{{ u.username }}</td>
+            <td>{{ u.display_name }}</td>
+            <td><span class="role-badge role-{{ u.role }}">{{ role_display_map.get(u.role, u.role) }}</span></td>
+            <td>
+              <div class="row-actions">
+                <form method="POST" action="{{ url_for('admin_reset_password', username=u.username) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="password" name="new_password" placeholder="New password" required autocomplete="new-password">
+                  <button type="submit" class="mini-btn" title="Reset password">🔑 Reset</button>
+                </form>
+                <form method="POST" action="{{ url_for('admin_delete_user', username=u.username) }}"
+                      onsubmit="return confirm('Delete user {{ u.username }}? This cannot be undone.');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="mini-btn danger" title="Delete account">🗑 Delete</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </section>
 
-    <section class="glass-panel admin-panel">
-      <h2 class="panel-title">Detection Thresholds <span class="panel-sub">— per-sector risk-score cutoffs</span></h2>
+    <section class="glass-panel reveal" id="detection-rules">
+      <h2 class="panel-title">Detection Engine Configuration <span class="panel-sub">— per-sector risk-score cutoffs &amp; model status</span></h2>
       <table class="admin-table">
-        <thead>
-          <tr><th>Sector</th><th>Alert Threshold</th><th>Critical Threshold</th><th>Actions</th></tr>
-        </thead>
+        <thead><tr><th>Sector</th><th>Alert Threshold</th><th>Critical Threshold</th><th>Detection Model</th><th>Data Source</th><th>Actions</th></tr></thead>
         <tbody>
           {% for s in sectors %}
           {% set t = thresholds.get(s, {'alert_threshold': 40, 'critical_threshold': 75}) %}
@@ -225,6 +258,8 @@
                        value="{{ t.critical_threshold }}" required>
               </div>
             </td>
+            <td style="font-size:12px; color:var(--text-dim);">IsolationForest + EWMA/CUSUM</td>
+            <td><span class="config-status-pill {{ 'replay' if replay_status.get(s) else '' }}">{{ 'Replay' if replay_status.get(s) else 'Synthetic' }}</span></td>
             <td>
               <form method="POST" action="{{ url_for('admin_update_thresholds') }}" id="threshold_form_{{ s }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -237,42 +272,20 @@
         </tbody>
       </table>
       <p style="font-size: 12px; color: var(--text-dim); margin-top: 12px;">
-        A reading is flagged as an anomaly once its risk score passes <b>Alert &gt;</b>.
-        It's treated as critical — high-severity log entries, red card state, exec "Critical" status —
-        once it passes <b>Critical &gt;</b>. Critical must be higher than Alert.
+        A reading is flagged as an anomaly once its risk score passes <b>Alert &gt;</b>. It's treated as
+        critical once it passes <b>Critical &gt;</b>. Critical must be higher than Alert.
       </p>
     </section>
 
-    <section class="glass-panel admin-panel">
-      <h2 class="panel-title">Accounts <span class="panel-sub">— {{ users|length }} total</span></h2>
-      <table class="admin-table">
-        <thead>
-          <tr><th>Username</th><th>Display Name</th><th>Role</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-          {% for u in users %}
-          <tr>
-            <td>{{ u.username }}</td>
-            <td>{{ u.display_name }}</td>
-            <td><span class="role-badge role-{{ u.role }}">{{ u.role|capitalize }}</span></td>
-            <td>
-              <div class="row-actions">
-                <form method="POST" action="{{ url_for('admin_reset_password', username=u.username) }}">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <input type="password" name="new_password" placeholder="New password" required autocomplete="new-password">
-                  <button type="submit" class="mini-btn" title="Reset password">🔑 Reset</button>
-                </form>
-                <form method="POST" action="{{ url_for('admin_delete_user', username=u.username) }}"
-                      onsubmit="return confirm('Delete user {{ u.username }}? This cannot be undone.');">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button type="submit" class="mini-btn danger" title="Delete account">🗑 Delete</button>
-                </form>
-              </div>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <section class="glass-panel reveal" id="configuration">
+      <h2 class="panel-title">System Configuration <span class="panel-sub">— environment-derived, read-only</span></h2>
+      <div style="margin-top:12px;">
+        <div class="config-info-row"><span class="k">Secret key source</span><span>{{ 'Environment variable (SECRET_KEY)' if secret_key_from_env else 'Auto-generated at boot (set SECRET_KEY for persistent sessions)' }}</span></div>
+        <div class="config-info-row"><span class="k">Notification webhook</span><span>{{ 'Configured' if webhook_configured else 'Not configured (KAVACH_WEBHOOK_URL unset)' }}</span></div>
+        <div class="config-info-row"><span class="k">Sectors monitored</span><span>{{ sectors|map('title')|join(', ') }}</span></div>
+        <div class="config-info-row"><span class="k">Sectors in replay mode</span><span>{{ replay_sectors|join(', ') if replay_sectors else 'None — all synthetic' }}</span></div>
+        <div class="config-info-row"><span class="k">Rate limit (login)</span><span>10 requests / minute</span></div>
+      </div>
     </section>
 
     <section class="glass-panel admin-panel">
@@ -329,5 +342,29 @@
       </div>
     </section>
   </div>
+    <section class="glass-panel reveal" id="audit">
+      <h2 class="panel-title">Recent Admin Actions <span class="panel-sub">— governance &amp; configuration events</span></h2>
+      <div class="audit-scroll" id="recent-actions-list"></div>
+      <div class="audit-empty" id="recent-actions-empty" style="display:none;">No admin actions recorded yet.</div>
+    </section>
+
+    <section class="glass-panel reveal" id="maintenance">
+      <h2 class="panel-title">System Maintenance <span class="panel-sub">— for repeat live demos (e.g. multiple judges)</span></h2>
+      <p style="font-size: 13px; color: var(--text-dim); margin: 10px 0 14px;">
+        Clears the Anomaly Log, Risk History, and Audit Trail so the dashboard looks fresh for the next run.
+        User accounts and detection thresholds are not affected.
+      </p>
+      <form method="POST" action="{{ url_for('admin_reset_demo') }}"
+            onsubmit="return confirm('Reset all demo data (log, risk history, audit trail)? This cannot be undone.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="admin-submit danger">🔄 Reset Demo Data</button>
+      </form>
+    </section>
+
+  </main>
+
+  <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='kavach-shared.js') }}"></script>
+  <script src="{{ url_for('static', filename='admin-console.js') }}"></script>
 </body>
 </html>
