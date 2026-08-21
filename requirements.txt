@@ -1,6 +1,10 @@
 flask
 flask-socketio
+flask-wtf
+flask-limiter
 scikit-learn
 numpy
 eventlet
 networkx
+requests
+reportlab

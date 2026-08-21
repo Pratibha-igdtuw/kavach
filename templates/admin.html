@@ -4,8 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KAVACH — Admin</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
   .admin-wrap { max-width: 880px; margin: 0 auto; padding: 32px 24px 60px; position: relative; z-index: 1; }
@@ -54,6 +53,19 @@
   }
   .mini-btn:hover { color: var(--text); border-color: rgba(201,162,39,0.4); }
   .mini-btn.danger:hover { color: #e57368; border-color: rgba(192,57,43,0.4); }
+  .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 8px; }
+  .health-card { padding: 14px 16px; border: 1px solid var(--panel-border); border-radius: 10px; background: rgba(255,255,255,0.02); }
+  .health-card h4 { font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.5px; color: var(--text); margin: 0 0 10px; text-transform: uppercase; }
+  .health-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--text-dim); padding: 4px 0; gap: 8px; }
+  .health-row .val { color: var(--text); text-align: right; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.5px; text-transform: uppercase; }
+  .pill.ok { background: rgba(63,167,150,0.15); color: var(--teal); border: 1px solid rgba(63,167,150,0.35); }
+  .pill.warn { background: rgba(192,57,43,0.15); color: #e57368; border: 1px solid rgba(192,57,43,0.35); }
+  .health-card .mini-btn { margin-top: 10px; width: 100%; }
+  .audit-filter-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
+  .audit-table-wrap { max-height: 420px; overflow-y: auto; border: 1px solid var(--panel-border); border-radius: 8px; }
+  table.admin-table.audit-table th { position: sticky; top: 0; background: #14161c; }
+  .notifier-status { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; font-size: 13px; color: var(--text-dim); }
 </style>
 </head>
 <body data-role="{{ role }}">
@@ -75,8 +87,91 @@
     {% if success %}<div class="admin-flash success">{{ success }}</div>{% endif %}
 
     <section class="glass-panel admin-panel">
+      <h2 class="panel-title">System Health <span class="panel-sub">— per-sector data source, model freshness, webhook status</span></h2>
+      <div class="health-grid">
+        {% for s in sectors %}
+        {% set h = sectors_health.get(s, {}) %}
+        <div class="health-card">
+          <h4>{{ sector_labels.get(s, s) }}</h4>
+          <div class="health-row">
+            <span>Data source</span>
+            <span class="val">{{ 'Replay CSV' if h.data_source == 'replay' else 'Synthetic' }}</span>
+          </div>
+          <div class="health-row">
+            <span>Detector trained</span>
+            <span class="val">{{ h.detector_trained_label }}</span>
+          </div>
+          <div class="health-row">
+            <span>Containment</span>
+            <span class="val">
+              <span class="pill {{ 'warn' if h.contained else 'ok' }}">{{ 'Active' if h.contained else 'Clear' }}</span>
+            </span>
+          </div>
+          <form method="POST" action="{{ url_for('admin_retrain_detector', sector=s) }}"
+                onsubmit="return confirm('Retrain the {{ sector_labels.get(s, s) }} detector on fresh baseline traffic? This resets its feedback bias and containment state.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="mini-btn">🧠 Retrain Detector</button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="notifier-status" style="margin-top: 16px;">
+        <span>Webhook:</span>
+        <span class="pill {{ 'ok' if webhook_config.configured else 'warn' }}">
+          {{ 'Configured (' ~ webhook_config.webhook_kind ~ ')' if webhook_config.configured else 'Not configured' }}
+        </span>
+        {% if webhook_config.configured %}
+        <form method="POST" action="{{ url_for('admin_notifier_test') }}" style="margin: 0;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="mini-btn">📡 Send Test Alert</button>
+        </form>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="glass-panel admin-panel">
+      <h2 class="panel-title">Notification Config <span class="panel-sub">— webhook for critical alerts (Slack / Discord)</span></h2>
+      <form method="POST" action="{{ url_for('admin_notifier_config') }}" style="margin-top: 14px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="admin-form-row">
+          <div class="admin-field" style="flex: 1; min-width: 260px;">
+            <label for="webhook_url">Webhook URL</label>
+            <input type="url" id="webhook_url" name="webhook_url" placeholder="https://hooks.slack.com/services/..."
+                   value="{{ webhook_config.webhook_url }}" autocomplete="off">
+          </div>
+          <div class="admin-field">
+            <label for="webhook_kind">Kind</label>
+            <select id="webhook_kind" name="webhook_kind">
+              <option value="slack" {{ 'selected' if webhook_config.webhook_kind == 'slack' }}>Slack</option>
+              <option value="discord" {{ 'selected' if webhook_config.webhook_kind == 'discord' }}>Discord</option>
+            </select>
+          </div>
+          <button type="submit" class="admin-submit">💾 Save Config</button>
+        </div>
+      </form>
+      <p style="font-size: 12px; color: var(--text-dim); margin-top: 12px;">
+        Leave the URL blank and save to disable webhook notifications. This persists to the database and
+        takes effect immediately — no restart needed, and it's not visible to analyst/executive accounts.
+      </p>
+    </section>
+
+    <section class="glass-panel admin-panel">
+      <h2 class="panel-title">Demo Controls <span class="panel-sub">— for repeat live demos (e.g. multiple judges)</span></h2>
+      <p style="font-size: 13px; color: var(--text-dim); margin: 10px 0 14px;">
+        Clears the Anomaly Log, Risk History, and Audit Trail so the dashboard looks fresh for the next run.
+        User accounts and detection thresholds are not affected.
+      </p>
+      <form method="POST" action="{{ url_for('admin_reset_demo') }}"
+            onsubmit="return confirm('Reset all demo data (log, risk history, audit trail)? This cannot be undone.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="admin-submit danger">🔄 Reset Demo Data</button>
+      </form>
+    </section>
+
+    <section class="glass-panel admin-panel">
       <h2 class="panel-title">Add User <span class="panel-sub">— create an analyst, executive, or admin account</span></h2>
       <form method="POST" action="{{ url_for('admin_add_user') }}" style="margin-top: 14px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="admin-form-row">
           <div class="admin-field">
             <label for="username">Username</label>
@@ -114,23 +209,29 @@
           {% set t = thresholds.get(s, {'alert_threshold': 40, 'critical_threshold': 75}) %}
           <tr>
             <td>{{ sector_labels.get(s, s) }}</td>
-            <td colspan="2">
-              <form method="POST" action="{{ url_for('admin_update_thresholds') }}" class="row-actions">
+            <td>
+              <div class="admin-field" style="min-width: 90px;">
+                <label for="alert_threshold_{{ s }}">Alert &gt;</label>
+                <input type="number" step="0.1" min="0" max="100" id="alert_threshold_{{ s }}"
+                       name="alert_threshold" form="threshold_form_{{ s }}"
+                       value="{{ t.alert_threshold }}" required>
+              </div>
+            </td>
+            <td>
+              <div class="admin-field" style="min-width: 90px;">
+                <label for="critical_threshold_{{ s }}">Critical &gt;</label>
+                <input type="number" step="0.1" min="0" max="100" id="critical_threshold_{{ s }}"
+                       name="critical_threshold" form="threshold_form_{{ s }}"
+                       value="{{ t.critical_threshold }}" required>
+              </div>
+            </td>
+            <td>
+              <form method="POST" action="{{ url_for('admin_update_thresholds') }}" id="threshold_form_{{ s }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="sector" value="{{ s }}">
-                <div class="admin-field" style="min-width: 90px;">
-                  <label for="alert_threshold_{{ s }}">Alert &gt;</label>
-                  <input type="number" step="0.1" min="0" max="100" id="alert_threshold_{{ s }}"
-                         name="alert_threshold" value="{{ t.alert_threshold }}" required>
-                </div>
-                <div class="admin-field" style="min-width: 90px;">
-                  <label for="critical_threshold_{{ s }}">Critical &gt;</label>
-                  <input type="number" step="0.1" min="0" max="100" id="critical_threshold_{{ s }}"
-                         name="critical_threshold" value="{{ t.critical_threshold }}" required>
-                </div>
                 <button type="submit" class="mini-btn" title="Save thresholds">💾 Save</button>
               </form>
             </td>
-            <td></td>
           </tr>
           {% endfor %}
         </tbody>
@@ -157,11 +258,13 @@
             <td>
               <div class="row-actions">
                 <form method="POST" action="{{ url_for('admin_reset_password', username=u.username) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="password" name="new_password" placeholder="New password" required autocomplete="new-password">
                   <button type="submit" class="mini-btn" title="Reset password">🔑 Reset</button>
                 </form>
                 <form method="POST" action="{{ url_for('admin_delete_user', username=u.username) }}"
                       onsubmit="return confirm('Delete user {{ u.username }}? This cannot be undone.');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit" class="mini-btn danger" title="Delete account">🗑 Delete</button>
                 </form>
               </div>
@@ -170,6 +273,60 @@
           {% endfor %}
         </tbody>
       </table>
+    </section>
+
+    <section class="glass-panel admin-panel">
+      <h2 class="panel-title">Full Audit Trail <span class="panel-sub">— compliance-grade access: filter, review, export</span></h2>
+      <form method="GET" action="{{ url_for('admin_panel') }}" class="audit-filter-row">
+        <div class="admin-field">
+          <label for="actor">Actor</label>
+          <input type="text" id="actor" name="actor" placeholder="username contains…" value="{{ audit_filters.actor }}">
+        </div>
+        <div class="admin-field">
+          <label for="sector">Sector</label>
+          <select id="sector" name="sector">
+            <option value="">All</option>
+            {% for s in sectors %}
+            <option value="{{ s }}" {{ 'selected' if audit_filters.sector == s }}>{{ sector_labels.get(s, s) }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="admin-field">
+          <label for="date_from">From</label>
+          <input type="date" id="date_from" name="date_from" value="{{ audit_filters.date_from }}">
+        </div>
+        <div class="admin-field">
+          <label for="date_to">To</label>
+          <input type="date" id="date_to" name="date_to" value="{{ audit_filters.date_to }}">
+        </div>
+        <button type="submit" class="admin-submit">🔎 Filter</button>
+        <a href="{{ url_for('admin_audit_export', actor=audit_filters.actor, sector=audit_filters.sector, date_from=audit_filters.date_from, date_to=audit_filters.date_to) }}"
+           class="admin-submit" style="text-decoration: none; display: inline-flex; align-items: center;">⬇ Export CSV</a>
+      </form>
+      <p style="font-size: 12px; color: var(--text-dim); margin: -6px 0 14px;">
+        Showing {{ audit_entries|length }} entr{{ 'y' if audit_entries|length == 1 else 'ies' }} (most recent first, up to 200 on screen — export for the full filtered set).
+      </p>
+      <div class="audit-table-wrap">
+        <table class="admin-table audit-table">
+          <thead>
+            <tr><th>Time</th><th>Actor</th><th>Role</th><th>Action</th><th>Sector</th><th>Detail</th></tr>
+          </thead>
+          <tbody>
+            {% for e in audit_entries %}
+            <tr>
+              <td>{{ e.time }}</td>
+              <td>{{ e.actor }}</td>
+              <td><span class="role-badge role-{{ e.role }}">{{ e.role|capitalize }}</span></td>
+              <td>{{ e.action }}</td>
+              <td>{{ sector_labels.get(e.sector, e.sector or '—') }}</td>
+              <td>{{ e.detail or '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="text-align:center; color: var(--text-dim);">No audit entries match this filter.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </section>
   </div>
 </body>

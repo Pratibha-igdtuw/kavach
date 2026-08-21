@@ -1,4 +1,10 @@
 venv/
 __pycache__/
 *.pyc
+<<<<<<< HEAD
 .DS_Store
+=======
+.DS_Store
+kavach.db
+.env
+>>>>>>> e9ca624be3503a409a43108734d739917e484cbe

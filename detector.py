@@ -19,6 +19,8 @@ positive; that nudges a per-sector risk bias down for a while, which is a
 simple stand-in for "the model adapts."
 """
 import random
+import time
+
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
@@ -83,6 +85,11 @@ class SectorDetector:
         # Feedback state: analyst-driven bias that suppresses over-eager alerts.
         self.risk_bias = 0.0
 
+        # When this instance's IsolationForest was fit — surfaced on the
+        # admin System Health panel so it's obvious how stale a sector's
+        # model is (esp. after a "Retrain Detector" / "Reset Demo" action).
+        self.trained_at = time.time()
+
     def mark_false_positive(self):
         """Called when an analyst flags the latest alert as a false positive.
         Raises the bar for this sector for a while (decays back over time)."""
@@ -134,6 +141,11 @@ class SectorDetector:
         if is_anomaly:
             attack_type, confidence = self._classify_attack(z_scores)
 
+        # Per-metric z-scores for investigation drill-down
+        metric_scores = {
+            METRIC_NAMES[i]: round(float(z_scores[i]), 2) for i in range(len(METRIC_NAMES))
+        }
+        
         return {
             "risk_score": round(risk_score, 1),
             "is_anomaly": is_anomaly,
@@ -142,4 +154,5 @@ class SectorDetector:
             "trend_risk": round(trend_risk, 1),
             "predicted_attack_type": attack_type,
             "attack_confidence": round(confidence, 2),
+            "metric_scores": metric_scores,  # Per-metric z-scores for drill-down
         }

@@ -5,6 +5,8 @@ const ROLE = document.body.dataset.role || 'executive';
 // user/threshold management via the /admin panel. Executive: read-only.
 const IS_ANALYST = ROLE === 'analyst' || ROLE === 'admin';
 const SHOW_EXEC_SUMMARY = ROLE === 'executive' || ROLE === 'admin';
+const IS_EXEC = ROLE === 'executive';
+const IS_ADMIN = ROLE === 'admin';
 
 const SECTOR_META = {
   hospital:   { icon: '🏥', label: 'Hospital' },
@@ -102,6 +104,7 @@ function buildCards() {
         <div style="display:flex; align-items:center; gap:10px;">
           <span class="icon">${meta.icon}</span>
           <span class="sector-name">${meta.label}</span>
+          <span class="source-badge" id="source-${key}" style="display:none;"></span>
         </div>
         <span class="badge safe" id="badge-${key}">Secure</span>
       </div>
@@ -482,11 +485,30 @@ function updateCard(key, data) {
   badge.className = `badge ${state === 'danger' ? 'danger' : state === 'warn' ? 'warn' : 'safe'}`;
   badge.textContent = badgeText(state);
 
+  const sourceBadge = document.getElementById(`source-${key}`);
+  if (sourceBadge) {
+    if (data.data_source === 'replay') {
+      sourceBadge.textContent = '⏺ REPLAY';
+      sourceBadge.title = 'Driven by recorded/real telemetry (data/*.csv), not synthetic generation';
+      sourceBadge.style.display = 'inline-block';
+    } else {
+      sourceBadge.style.display = 'none';
+    }
+  }
+
   updateSparkline(key, score);
 
-  const factorName = (data.top_factor || '').replace(/_/g, ' ');
-  document.getElementById(`factor-${key}`).innerHTML =
-    `Top factor: <b>${factorName}</b> · ${data.metrics ? data.metrics[data.top_factor] : ''}`;
+  const factorEl = document.getElementById(`factor-${key}`);
+  if (IS_EXEC) {
+    // Executives get a plain-English read, not raw z-score/metric jargon.
+    factorEl.innerHTML = score >= 75 ? 'Status: <b>Critical — under active review</b>'
+      : score >= 40 ? 'Status: <b>Elevated — being monitored</b>'
+      : 'Status: <b>Normal</b>';
+  } else {
+    const factorName = (data.top_factor || '').replace(/_/g, ' ');
+    factorEl.innerHTML =
+      `Top factor: <b>${factorName}</b> · ${data.metrics ? data.metrics[data.top_factor] : ''}`;
+  }
 
   const attackRow = document.getElementById(`attack-type-${key}`);
   if (data.contained) {
@@ -494,9 +516,14 @@ function updateCard(key, data) {
   } else if (data.predicted_attack_type) {
     const label = ATTACK_TYPE_LABEL[data.predicted_attack_type] || data.predicted_attack_type;
     const pct = Math.round((data.attack_confidence || 0) * 100);
-    const mitre = MITRE_MAPPING[data.predicted_attack_type];
-    const mitreTag = mitre ? `<span class="mitre-tag" title="${mitre.technique_name}">${mitre.technique_id}</span>` : '';
-    attackRow.innerHTML = `<span class="attack-chip">⚠ ${label} <em>${pct}% match</em></span>${mitreTag}`;
+    if (IS_EXEC) {
+      // Skip the MITRE technique ID for execs — keep the plain label + confidence only.
+      attackRow.innerHTML = `<span class="attack-chip">⚠ ${label} <em>${pct}% match</em></span>`;
+    } else {
+      const mitre = MITRE_MAPPING[data.predicted_attack_type];
+      const mitreTag = mitre ? `<span class="mitre-tag" title="${mitre.technique_name}">${mitre.technique_id}</span>` : '';
+      attackRow.innerHTML = `<span class="attack-chip">⚠ ${label} <em>${pct}% match</em></span>${mitreTag}`;
+    }
   } else {
     attackRow.innerHTML = '';
   }
@@ -538,12 +565,23 @@ const SECTOR_LABEL = { hospital: 'Hospital', power_grid: 'Power Grid', bank: 'Ba
 function addLogEntries(entries) {
   if (!entries || entries.length === 0) return;
   allLogs.push(...entries);
-  renderLogs();
+  // When the analyst is looking at "My Queue", a fresh anomaly shouldn't
+  // silently swap the panel back to the chronological "All Events" render —
+  // re-pull the queue instead so the new alert lands in the right spot
+  // (respecting the current status filter / sort) with its full drill-down
+  // data intact.
+  if (typeof currentQueueView !== 'undefined' && currentQueueView === 'queue') {
+    loadAnalystQueue();
+  } else {
+    renderLogs();
+  }
 }
 
 function getFilteredLogs() {
-  const sectorFilter = filterSectorEl.value;
-  const severityFilter = filterSeverityEl.value;
+  // Executives don't get the filter dropdowns (removed from the DOM for a
+  // simpler "briefing" view) — they always see high-severity items only.
+  const sectorFilter = filterSectorEl ? filterSectorEl.value : 'all';
+  const severityFilter = filterSeverityEl ? filterSeverityEl.value : (IS_EXEC ? 'high' : 'all');
   const statusFilter = filterStatusEl ? filterStatusEl.value : 'all';
   return allLogs.filter(e =>
     (sectorFilter === 'all' || e.sector === sectorFilter) &&
@@ -604,23 +642,47 @@ function renderLogs() {
     logScroll.appendChild(div);
   });
 
-  if (IS_ANALYST) {
-    logScroll.querySelectorAll('.triage-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = parseInt(btn.dataset.id, 10);
-        const status = btn.dataset.status;
-        socket.emit('update_alert_status', { id, status });
-        btn.disabled = true;
-      });
+  wireTriageButtons();
+}
+
+// Shared by the "All Events" list and the "My Queue" view — both render
+// into #log-scroll, so one wiring pass after either render picks up all
+// the triage buttons currently on screen.
+function wireTriageButtons() {
+  if (!IS_ANALYST) return;
+  logScroll.querySelectorAll('.triage-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation(); // don't also trigger a queue row's drill-down click
+      const id = parseInt(btn.dataset.id, 10);
+      const status = btn.dataset.status;
+      socket.emit('update_alert_status', { id, status });
+      btn.disabled = true;
     });
-  }
+  });
 }
 
 function applyAlertStatusUpdate({ id, status }) {
   const entry = allLogs.find(e => e.id === id);
-  if (!entry) return;
-  entry.status = status;
-  renderLogs();
+  if (entry) entry.status = status;
+
+  const queueEntry = currentQueue.find(e => e.id === id);
+  if (queueEntry) queueEntry.status = status;
+
+  if (currentQueueView === 'queue') {
+    // Status changes can move an alert out of the current filter (e.g.
+    // resolving it while viewing "Unresolved"), so re-pull from the server
+    // rather than just re-rendering the stale local array.
+    loadAnalystQueue();
+  } else {
+    renderLogs();
+  }
+
+  // Keep an open drill-down card in sync if it's showing this alert.
+  const modal = document.getElementById('drill-down-modal');
+  if (modal && modal.classList.contains('active') && modal.dataset.alertId === String(id)) {
+    const updated = queueEntry || entry;
+    if (updated) showDrillDown(updated);
+  }
 }
 
 function downloadCSV() {
@@ -645,8 +707,8 @@ function downloadCSV() {
   URL.revokeObjectURL(url);
 }
 
-filterSectorEl.addEventListener('change', renderLogs);
-filterSeverityEl.addEventListener('change', renderLogs);
+if (filterSectorEl) filterSectorEl.addEventListener('change', renderLogs);
+if (filterSeverityEl) filterSeverityEl.addEventListener('change', renderLogs);
 if (filterStatusEl) filterStatusEl.addEventListener('change', renderLogs);
 exportBtn.addEventListener('click', downloadCSV);
 
@@ -665,6 +727,22 @@ function updateExecSummary(summary) {
   execTopSectorScoreEl.textContent = `Risk score: ${summary.top_sector_score}/100`;
 
   execIncidents24hEl.textContent = summary.incidents_24h;
+
+  updateExecBriefing(summary);
+}
+
+const execBriefingEl = document.getElementById('exec-briefing');
+function updateExecBriefing(summary) {
+  if (!execBriefingEl) return;
+  let text;
+  if (summary.org_risk >= 75) {
+    text = `⚠ Critical: ${summary.top_sector_label} is under active threat (risk ${summary.top_sector_score}/100). The security team has been alerted and is responding.`;
+  } else if (summary.org_risk >= 45) {
+    text = `Elevated risk in ${summary.top_sector_label} (${summary.top_sector_score}/100) — being actively monitored, no action needed from you right now.`;
+  } else {
+    text = `All sectors nominal. ${summary.incidents_24h} incident${summary.incidents_24h === 1 ? '' : 's'} handled in the last 24 hours.`;
+  }
+  execBriefingEl.textContent = text;
 }
 
 // ---------- audit trail ----------
@@ -754,9 +832,11 @@ muteBtn.addEventListener('click', () => {
 // ---------- incident report link ----------
 const reportSectorEl = document.getElementById('report-sector');
 const reportBtn = document.getElementById('report-btn');
+const reportBtnPdf = document.getElementById('report-btn-pdf');
 function updateReportLink() {
-  if (!reportSectorEl || !reportBtn) return;
-  reportBtn.href = `/report/${reportSectorEl.value}`;
+  if (!reportSectorEl) return;
+  if (reportBtn) reportBtn.href = `/report/${reportSectorEl.value}`;
+  if (reportBtnPdf) reportBtnPdf.href = `/report/${reportSectorEl.value}/pdf`;
 }
 if (reportSectorEl) {
   reportSectorEl.addEventListener('change', updateReportLink);
@@ -906,3 +986,300 @@ socket.on('thresholds_updated', (payload) => {
 socket.on('alert_status_updated', (payload) => {
   applyAlertStatusUpdate(payload);
 });
+
+// ---------- demo reset ----------
+socket.on('demo_reset', () => {
+  allLogs.length = 0;
+  allAudit.length = 0;
+  currentQueue = [];
+  renderAudit();
+  if (currentQueueView === 'queue') {
+    loadAnalystQueue();
+  } else {
+    renderLogs();
+  }
+});
+
+// ---------- admin quick-panel ----------
+if (IS_ADMIN) {
+  fetch('/api/admin/summary')
+    .then(r => r.json())
+    .then(data => {
+      const totalEl = document.getElementById('admin-total-users');
+      const breakdownEl = document.getElementById('admin-role-breakdown');
+      const thresholdListEl = document.getElementById('admin-threshold-list');
+      if (totalEl) totalEl.textContent = data.total_users;
+      if (breakdownEl) {
+        const parts = Object.entries(data.role_counts).map(([role, count]) => `${count} ${role}`);
+        breakdownEl.textContent = parts.join(' · ');
+      }
+      if (thresholdListEl && data.thresholds) {
+        thresholdListEl.innerHTML = Object.entries(data.thresholds).map(([sector, t]) => {
+          const label = SECTOR_LABEL[sector] || sector;
+          return `<div class="admin-threshold-row"><span>${label}</span><span>Alert ${t.alert_threshold} · Critical ${t.critical_threshold}</span></div>`;
+        }).join('');
+      }
+    })
+    .catch(() => {
+      const thresholdListEl = document.getElementById('admin-threshold-list');
+      if (thresholdListEl) thresholdListEl.textContent = 'Unable to load — check /admin panel.';
+    });
+}
+// ========== ANALYST QUEUE VIEW ==========
+
+let currentQueueView = 'all'; // 'all' or 'queue'
+let currentQueue = [];
+let queuePollInterval = null;
+
+function initQueueView() {
+  const role = document.body.getAttribute('data-role');
+  if (role !== 'analyst' && role !== 'admin') return;
+  
+  const toggleBtns = document.querySelectorAll('.view-toggle-btn');
+  toggleBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const view = btn.getAttribute('data-view');
+      switchQueueView(view);
+    });
+  });
+  
+  const queueStatusFilter = document.getElementById('queue-status-filter');
+  const queueSortFilter = document.getElementById('queue-sort-filter');
+  if (queueStatusFilter) queueStatusFilter.addEventListener('change', () => loadAnalystQueue());
+  if (queueSortFilter) queueSortFilter.addEventListener('change', () => loadAnalystQueue());
+}
+
+function switchQueueView(view) {
+  currentQueueView = view;
+  
+  const toggleBtns = document.querySelectorAll('.view-toggle-btn');
+  toggleBtns.forEach(btn => btn.classList.remove('active'));
+  document.querySelector(`[data-view="${view}"]`).classList.add('active');
+  
+  const fullFilters = document.getElementById('log-filters-full');
+  const queueFilters = document.getElementById('log-filters-queue');
+  
+  if (view === 'all') {
+    fullFilters.style.display = '';
+    queueFilters.style.display = 'none';
+  } else {
+    fullFilters.style.display = 'none';
+    queueFilters.style.display = '';
+    loadAnalystQueue();
+  }
+}
+
+async function loadAnalystQueue() {
+  try {
+    const statusFilter = document.getElementById('queue-status-filter')?.value || 'unresolved';
+    const sortFilter = document.getElementById('queue-sort-filter')?.value || 'age';
+    
+    const resp = await fetch(`/api/analyst/queue?status=${statusFilter}&sort=${sortFilter}`);
+    if (!resp.ok) return;
+    
+    const data = await resp.json();
+    currentQueue = data.queue || [];
+
+    renderQueue(currentQueue);
+
+    const countBadge = document.getElementById('queue-count');
+    if (countBadge) {
+      const filterLabel = { unresolved: 'unresolved', new: 'new', acknowledged: 'acknowledged', all: 'total' }[statusFilter] || 'unresolved';
+      countBadge.textContent = `${data.count} ${filterLabel}`;
+    }
+  } catch (err) {
+    console.error('Queue load failed:', err);
+  }
+}
+
+function slaBadgeClassFor(ageMinutes) {
+  if (ageMinutes >= 15) return 'critical';
+  if (ageMinutes >= 5) return 'warn';
+  return 'ok';
+}
+
+function renderQueue(queue) {
+  if (!logScroll) return;
+
+  logScroll.innerHTML = '';
+
+  if (queue.length === 0) {
+    logScroll.innerHTML = '<div class="log-empty">No unresolved alerts. Great work!</div>';
+    return;
+  }
+
+  const now = Date.now() / 1000;
+
+  queue.forEach((alert) => {
+    const entry = document.createElement('div');
+    entry.className = `log-entry expandable ${alert.severity === 'high' ? 'high' : ''}`;
+    if (alert.id != null) entry.dataset.logId = alert.id;
+
+    const ts = alert.ts || now;
+    const ageMinutes = Math.floor((now - ts) / 60);
+    const badgeClass = slaBadgeClassFor(ageMinutes);
+
+    entry.innerHTML = `
+      <div class="log-entry-row">
+        <span class="time">${alert.time}</span>
+        <span class="sector-tag">${SECTOR_LABEL[alert.sector] || alert.sector}</span>
+        ${mitreTagFor(alert)}
+        <span class="sla-badge ${badgeClass}" title="Time since detection">${ageMinutes}m ago</span>
+        ${statusBadge(alert)}
+      </div>
+      <span class="msg">${alert.message}</span>
+      ${triageActionsFor(alert)}
+    `;
+
+    entry.addEventListener('click', () => showDrillDown(alert));
+    logScroll.appendChild(entry);
+  });
+
+  wireTriageButtons();
+}
+
+function showDrillDown(alert) {
+  let modal = document.getElementById('drill-down-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'drill-down-modal';
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.classList.remove('active');
+    });
+    document.body.appendChild(modal);
+  }
+  modal.dataset.alertId = alert.id != null ? String(alert.id) : '';
+  
+  const forestRisk = alert.forest_risk || 0;
+  const trendRisk = alert.trend_risk || 0;
+  const metricScores = alert.metric_scores || {};
+  const playbook = alert.playbook_actions || [];
+  const mitrePlan = alert.mitre_response || '';
+  
+  let metricsHTML = '';
+  for (const [metricName, zScore] of Object.entries(metricScores)) {
+    metricsHTML += `
+      <div class="metric-score-item">
+        <div class="metric-name">${metricName}</div>
+        <div class="metric-z">${zScore.toFixed(2)}</div>
+      </div>
+    `;
+  }
+  
+  let playbookHTML = '<ul class="playbook-list">';
+  playbook.forEach(action => {
+    playbookHTML += `<li>${action}</li>`;
+  });
+  playbookHTML += '</ul>';
+  
+  modal.innerHTML = `
+    <div class="drill-down-card" style="position: relative;">
+      <button class="drill-down-close" onclick="document.getElementById('drill-down-modal').classList.remove('active')">✕</button>
+      
+      <h2>${alert.message}</h2>
+      
+      <div class="drill-down-section">
+        <h3>Alert Metadata</h3>
+        <div class="drill-down-grid">
+          <div class="drill-down-metric">
+            <div class="drill-down-metric-label">Sector</div>
+            <div class="drill-down-metric-value">${alert.sector.replace('_', ' ').toUpperCase()}</div>
+          </div>
+          <div class="drill-down-metric">
+            <div class="drill-down-metric-label">Severity</div>
+            <div class="drill-down-metric-value">${alert.severity?.toUpperCase() || 'UNKNOWN'}</div>
+          </div>
+          <div class="drill-down-metric">
+            <div class="drill-down-metric-label">Status</div>
+            <div class="drill-down-metric-value">${alert.status?.toUpperCase() || 'NEW'}</div>
+          </div>
+          <div class="drill-down-metric">
+            <div class="drill-down-metric-label">Attack Type</div>
+            <div class="drill-down-metric-value">${alert.attack_type || '—'}</div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="drill-down-section">
+        <h3>Risk Components</h3>
+        <div class="drill-down-grid">
+          <div class="drill-down-metric">
+            <div class="drill-down-metric-label">Forest Risk (Point Anomaly)</div>
+            <div class="drill-down-metric-value">${forestRisk.toFixed(1)}/100</div>
+          </div>
+          <div class="drill-down-metric">
+            <div class="drill-down-metric-label">Trend Risk (Drift Signal)</div>
+            <div class="drill-down-metric-value">${trendRisk.toFixed(1)}/100</div>
+          </div>
+        </div>
+      </div>
+      
+      ${Object.keys(metricScores).length > 0 ? `
+      <div class="drill-down-section">
+        <h3>Per-Metric Z-Scores (Deviations from Baseline)</h3>
+        <div class="metric-scores-list">
+          ${metricsHTML}
+        </div>
+      </div>
+      ` : ''}
+      
+      ${mitrePlan ? `
+      <div class="drill-down-section">
+        <h3>MITRE ATT&CK Response (${alert.mitre_id || '—'})</h3>
+        <p style="font-size: 12px; color: var(--text); line-height: 1.5; margin: 0;">${mitrePlan}</p>
+      </div>
+      ` : ''}
+      
+      ${playbook.length > 0 ? `
+      <div class="drill-down-section">
+        <h3>Recommended Actions</h3>
+        ${playbookHTML}
+      </div>
+      ` : ''}
+
+      ${IS_ANALYST && alert.status ? `
+      <div class="drill-down-section drill-down-actions">
+        ${triageActionsFor(alert)}
+      </div>
+      ` : ''}
+    </div>
+  `;
+
+  modal.classList.add('active');
+  if (IS_ANALYST) {
+    modal.querySelectorAll('.triage-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const status = btn.dataset.status;
+        socket.emit('update_alert_status', { id, status });
+        btn.disabled = true;
+      });
+    });
+  }
+}
+
+function updateSLATimes() {
+  if (!IS_ANALYST || currentQueueView !== 'queue') return;
+
+  const now = Date.now() / 1000;
+
+  document.querySelectorAll('.log-entry.expandable[data-log-id]').forEach(entry => {
+    const id = parseInt(entry.dataset.logId, 10);
+    const alert = currentQueue.find(e => e.id === id);
+    if (!alert) return;
+
+    const ts = alert.ts || now;
+    const ageMinutes = Math.floor((now - ts) / 60);
+    const badge = entry.querySelector('.sla-badge');
+    if (badge) {
+      badge.textContent = `${ageMinutes}m ago`;
+      badge.className = `sla-badge ${slaBadgeClassFor(ageMinutes)}`;
+    }
+  });
+}
+
+// Initialize queue view on page load
+document.addEventListener('DOMContentLoaded', initQueueView);
+
+// Update SLA times every 10 seconds while in queue view
+setInterval(updateSLATimes, 10000);

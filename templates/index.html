@@ -4,8 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KAVACH — Sentinel Eye</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body data-role="{{ role }}">
@@ -39,6 +38,9 @@
       <div class="session-pill" id="session-pill">
         <span class="role-badge role-{{ role }}">{{ {'analyst': 'Analyst', 'executive': 'Executive', 'admin': 'Admin'}[role] }}</span>
         <span class="session-name">{{ display_name }}</span>
+        {% if role in ['executive', 'admin'] %}
+        <a class="admin-link" href="{{ url_for('executive_view') }}" title="Business view">📊 Executive</a>
+        {% endif %}
         {% if role == 'admin' %}
         <a class="admin-link" href="{{ url_for('admin_panel') }}" title="Manage users">👤 Admin</a>
         {% endif %}
@@ -72,6 +74,9 @@
     {% if role in ['executive', 'admin'] %}
     <section class="exec-summary-panel glass-panel reveal" id="exec-summary-panel">
       <h2 class="panel-title">Executive Summary <span class="panel-sub">— org-wide security posture</span></h2>
+      {% if role == 'executive' %}
+      <p class="exec-briefing" id="exec-briefing">Assessing current posture…</p>
+      {% endif %}
       <div class="exec-summary-grid" id="exec-summary-grid">
         <div class="exec-metric">
           <div class="exec-metric-label">Overall Risk</div>
@@ -87,6 +92,27 @@
           <div class="exec-metric-label">Incidents (24h)</div>
           <div class="exec-metric-value" id="exec-incidents-24h">—</div>
           <div class="exec-metric-status">Confirmed anomalies detected</div>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if role == 'admin' %}
+    <section class="admin-quick-panel glass-panel reveal" id="admin-quick-panel">
+      <h2 class="panel-title">System Configuration <span class="panel-sub">— admin snapshot</span></h2>
+      <div class="admin-quick-grid" id="admin-quick-grid">
+        <div class="admin-quick-metric">
+          <div class="admin-quick-label">Registered Users</div>
+          <div class="admin-quick-value" id="admin-total-users">—</div>
+          <div class="admin-quick-status" id="admin-role-breakdown"></div>
+        </div>
+        <div class="admin-quick-metric">
+          <div class="admin-quick-label">Detection Thresholds</div>
+          <div class="admin-quick-thresholds" id="admin-threshold-list">Loading…</div>
+        </div>
+        <div class="admin-quick-metric admin-quick-links">
+          <a class="export-btn" href="{{ url_for('admin_panel') }}">👤 Manage Users</a>
+          <a class="export-btn" href="{{ url_for('admin_panel') }}#thresholds">⚙ Tune Thresholds</a>
         </div>
       </div>
     </section>
@@ -131,10 +157,24 @@
       <div class="history-legend" id="history-legend"></div>
     </section>
 
-    <section class="log-panel glass-panel reveal">
+    <section class="log-panel glass-panel reveal" data-log-view="{{ 'brief' if role == 'executive' else 'full' }}">
       <div class="log-header">
-        <h2 class="panel-title">Anomaly Log <span class="panel-sub">— live decree of events</span></h2>
+        {% if role == 'executive' %}
+        <h2 class="panel-title">Notable Events <span class="panel-sub">— high-severity items only</span></h2>
         <div class="log-controls">
+          <button class="export-btn" id="export-csv">⬇ Export CSV</button>
+        </div>
+        {% else %}
+        <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 14px;">
+          <h2 class="panel-title" style="margin: 0;">Anomaly Log <span class="panel-sub">— live decree of events</span></h2>
+          {% if role == 'analyst' or role == 'admin' %}
+          <div class="log-view-toggle">
+            <button class="view-toggle-btn active" data-view="all">📋 All Events</button>
+            <button class="view-toggle-btn" data-view="queue">🎯 My Queue</button>
+          </div>
+          {% endif %}
+        </div>
+        <div class="log-controls" id="log-filters-full">
           <select class="log-filter" id="filter-sector">
             <option value="all">All sectors</option>
             <option value="hospital">Hospital</option>
@@ -154,6 +194,20 @@
           </select>
           <button class="export-btn" id="export-csv">⬇ Export CSV</button>
         </div>
+        <div class="log-controls" id="log-filters-queue" style="display: none;">
+          <select class="log-filter" id="queue-status-filter">
+            <option value="unresolved">Unresolved (New + Ack)</option>
+            <option value="new">New only</option>
+            <option value="acknowledged">Acknowledged only</option>
+            <option value="all">All triage-eligible</option>
+          </select>
+          <select class="log-filter" id="queue-sort-filter">
+            <option value="age">Sort by age (newest first)</option>
+            <option value="severity">Sort by severity</option>
+          </select>
+          <span id="queue-count" style="font-size: 11px; color: var(--text-dim); text-transform: uppercase;">0 unresolved</span>
+        </div>
+        {% endif %}
       </div>
       <div class="log-scroll" id="log-scroll">
         <div class="log-empty" id="log-empty">No anomalies yet. The watch continues…</div>
@@ -165,23 +219,37 @@
           <option value="power_grid">Power Grid</option>
           <option value="bank">Bank</option>
         </select>
-        <a class="export-btn" id="report-btn" href="#" target="_blank">📄 Download Report</a>
+        <a class="export-btn" id="report-btn" href="#" target="_blank">📄 Markdown</a>
+        <a class="export-btn" id="report-btn-pdf" href="#" target="_blank">📑 PDF</a>
       </div>
     </section>
 
+    {% if role != 'executive' %}
     <section class="audit-panel glass-panel reveal" id="audit-panel">
       <h2 class="panel-title">Audit Trail <span class="panel-sub">— who did what, and when</span></h2>
       <div class="audit-scroll" id="audit-scroll">
         <div class="audit-empty" id="audit-empty">No actions recorded yet.</div>
       </div>
     </section>
+    {% endif %}
 
   </main>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="{{ url_for('static', filename='vendor/three.min.js') }}"></script>
   <script src="{{ url_for('static', filename='hero3d.js') }}"></script>
   <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
   <script src="{{ url_for('static', filename='script.js') }}"></script>
+<!-- Case Management Panel -->
+<div id="case-management-container">
+  <!-- Copy the entire content from case_management_template.html here -->
+</div>
+// Initialize Case Management UI
+const caseUI = new CaseManagementUI(socket);
+
+// Expose it globally so the HTML buttons can call it
+window.caseUI = caseUI;
+
+<script src="static/case_management_frontend.js"></script>
 </body>
 </html>

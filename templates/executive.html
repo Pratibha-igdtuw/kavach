@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAVACH — Executive View</title>
+<link href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+<style>
+  .exec-wrap { max-width: 1000px; margin: 0 auto; padding: 32px 24px 60px; position: relative; z-index: 1; }
+  .exec-topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+  .exec-title { font-family: 'Cinzel', serif; font-size: 22px; letter-spacing: 1.5px;
+    background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .exec-nav { display: flex; align-items: center; gap: 14px; }
+  .exec-nav a { color: var(--text-dim); text-decoration: none; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+  .exec-nav a:hover { color: var(--gold-bright); }
+  .exec-panel { padding: 22px 24px; margin-bottom: 22px; }
+  .exec-summary-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .summary-card { padding: 20px; border: 1px solid var(--panel-border); border-radius: 10px; background: rgba(255,255,255,0.02); }
+  .summary-card h3 { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.5px;
+    text-transform: uppercase; color: var(--text-dim); margin: 0 0 12px; }
+  .summary-card .big-number { font-size: 32px; font-weight: bold; color: var(--gold-bright); margin: 8px 0; }
+  .summary-card .status-label { font-size: 13px; color: var(--text); line-height: 1.5; }
+  .impact-statement { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 12px; }
+  .impact-card { padding: 14px 16px; border: 1px solid var(--panel-border); border-radius: 8px; background: rgba(255,255,255,0.02); }
+  .impact-card h4 { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.5px;
+    text-transform: uppercase; color: var(--text-dim); margin: 0 0 8px; }
+  .impact-card p { font-size: 13px; color: var(--text); margin: 0; line-height: 1.4; }
+  .trend-chart-wrap { position: relative; height: 280px; margin-top: 14px; }
+  .perf-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+  .metric-card { padding: 18px; border: 1px solid var(--panel-border); border-radius: 10px; background: rgba(255,255,255,0.02); text-align: center; }
+  .metric-card .metric-label { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.5px;
+    text-transform: uppercase; color: var(--text-dim); margin-bottom: 10px; }
+  .metric-card .metric-value { font-size: 28px; font-weight: bold; color: var(--teal); }
+  .metric-card .metric-sub { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+  .report-btn { display: inline-block; padding: 12px 20px; border-radius: 8px; border: 1px solid rgba(201,162,39,0.4);
+    background: rgba(201,162,39,0.12); color: var(--gold-bright); font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase; cursor: pointer;
+    transition: background 0.2s ease; text-decoration: none; }
+  .report-btn:hover { background: rgba(201,162,39,0.22); }
+  .panel-title { font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--text); margin: 0 0 16px; }
+  .panel-sub { font-size: 11px; color: var(--text-dim); text-transform: none; letter-spacing: 0; }
+</style>
+</head>
+<body data-role="{{ role }}">
+  <div class="ambient-glow glow-a"></div>
+  <div class="ambient-glow glow-b"></div>
+  <div class="grid-overlay"></div>
+
+  <div class="exec-wrap">
+    <div class="exec-topbar">
+      <div class="exec-title">📊 KAVACH — Executive View</div>
+      <div class="exec-nav">
+        <span class="session-name">{{ display_name }}</span>
+        <a href="{{ url_for('index') }}">← Dashboard</a>
+        <a href="{{ url_for('logout') }}">Sign out</a>
+      </div>
+    </div>
+
+    <!-- Org Risk Summary -->
+    <section class="glass-panel exec-panel">
+      <h2 class="panel-title">Organizational Risk Posture</h2>
+      <div class="exec-summary-row">
+        <div class="summary-card">
+          <h3>Current Org Risk</h3>
+          <div class="big-number">{{ exec_summary.org_risk }}</div>
+          <div class="status-label">{{ exec_summary.status_label }}</div>
+        </div>
+        <div class="summary-card">
+          <h3>Top Risk Sector</h3>
+          <div class="big-number" style="font-size: 20px;">{{ exec_summary.top_sector_label }}</div>
+          <div class="status-label">Risk Score: <b>{{ exec_summary.top_sector_score }}/100</b></div>
+        </div>
+        <div class="summary-card">
+          <h3>Incidents (24h)</h3>
+          <div class="big-number">{{ exec_summary.incidents_24h }}</div>
+          <div class="status-label">Anomalies detected and logged</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Risk Trend Over Time -->
+    <section class="glass-panel exec-panel">
+      <h2 class="panel-title">Risk Trend — 7 Days <span class="panel-sub">— historical view for business review</span></h2>
+      <div class="trend-chart-wrap">
+        <canvas id="riskTrendChart"></canvas>
+      </div>
+    </section>
+
+    <!-- Impact Statements -->
+    <section class="glass-panel exec-panel">
+      <h2 class="panel-title">Business Impact by Sector</h2>
+      <div class="impact-statement">
+        {% for sector in sectors %}
+        <div class="impact-card">
+          <h4>{{ sector_labels.get(sector, sector) }}</h4>
+          <p>{{ impact_statements.get(sector, '—') }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <!-- SOC Team Performance -->
+    <section class="glass-panel exec-panel">
+      <h2 class="panel-title">Security Operations Team Performance <span class="panel-sub">— 7-day trailing metrics</span></h2>
+      <div class="perf-metrics">
+        <div class="metric-card">
+          <div class="metric-label">Avg Time to Acknowledge</div>
+          <div class="metric-value">{{ performance.avg_time_to_ack_label }}</div>
+          <div class="metric-sub">{{ performance.avg_time_to_ack_seconds }}s</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Avg Time to Resolve</div>
+          <div class="metric-value">{{ performance.avg_time_to_resolve_label }}</div>
+          <div class="metric-sub">{{ performance.avg_time_to_resolve_seconds }}s</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Incidents Contained</div>
+          <div class="metric-value">{{ performance.pct_contained }}%</div>
+          <div class="metric-sub">proactive response</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Total Incidents</div>
+          <div class="metric-value">{{ performance.total_incidents }}</div>
+          <div class="metric-sub">this week</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Board Report Export -->
+    <section class="glass-panel exec-panel" style="text-align: center;">
+      <h2 class="panel-title">Executive Deliverable</h2>
+      <p style="font-size: 13px; color: var(--text-dim); margin-bottom: 16px;">
+        High-level board report: org risk summary, top incidents, and SOC performance metrics for C-suite review.
+      </p>
+      <a href="{{ url_for('board_report_pdf') }}" class="report-btn">📄 Export Board Report (PDF)</a>
+    </section>
+  </div>
+
+  <script>
+    // Load trend data and render Chart.js line chart
+    async function loadTrends() {
+      try {
+        const resp = await fetch('/api/executive/trends');
+        const data = await resp.json();
+        
+        const ctx = document.getElementById('riskTrendChart').getContext('2d');
+        const sectorLabels = {
+          hospital: 'Hospital',
+          power_grid: 'Power Grid',
+          bank: 'Bank'
+        };
+        const colors = {
+          hospital: '#3fa796',
+          power_grid: '#8b3aff',
+          bank: '#c9a227'
+        };
+        
+        const datasets = [];
+        for (const sector in data) {
+          const points = data[sector];
+          datasets.push({
+            label: sectorLabels[sector] || sector,
+            data: points.map(p => ({x: p.ts * 1000, y: p.risk_score})),
+            borderColor: colors[sector],
+            backgroundColor: colors[sector] + '30',
+            borderWidth: 2,
+            tension: 0.3,
+            fill: true,
+            pointRadius: 2,
+            pointHoverRadius: 4,
+          });
+        }
+        
+        new Chart(ctx, {
+          type: 'line',
+          data: { datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                display: true,
+                labels: { color: '#a0a8b8', font: { size: 11, family: "'JetBrains Mono'" } }
+              },
+              tooltip: {
+                backgroundColor: '#1b2a41',
+                titleColor: '#fff',
+                bodyColor: '#a0a8b8',
+                callbacks: {
+                  label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}/100`
+                }
+              }
+            },
+            scales: {
+              x: {
+                type: 'time',
+                time: { unit: 'day', displayFormats: { day: 'MMM DD' } },
+                ticks: { color: '#6b7280', font: { size: 10 } },
+                grid: { color: 'rgba(255,255,255,0.05)' }
+              },
+              y: {
+                min: 0, max: 100,
+                ticks: { color: '#6b7280', font: { size: 10 } },
+                grid: { color: 'rgba(255,255,255,0.05)' }
+              }
+            }
+          }
+        });
+      } catch (err) {
+        console.error('Failed to load trends:', err);
+        document.getElementById('riskTrendChart').parentElement.innerHTML = '<p style="color:#aaa; text-align:center;">Unable to load trend data</p>';
+      }
+    }
+    
+    // Load on page ready
+    document.addEventListener('DOMContentLoaded', loadTrends);
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/date-fns/2.29.3/date-fns.min.js"></script>
+</body>
+</html>
