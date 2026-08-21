@@ -84,6 +84,15 @@ const auditEmpty = document.getElementById('audit-empty');
 
 let allLogs = [];
 let allAudit = [];
+// Hard cap on client-side history buffers. The UI only ever renders the most
+// recent 60 entries (see renderLogs/renderAudit), but every incoming socket
+// event used to run a full Array#filter over the *entire* unbounded array
+// (getFilteredLogs) and rebuild the DOM — on a 24/7 monitoring dashboard that
+// array grows forever, so the page got measurably slower (and the custom
+// cursor / any mousemove-driven UI got visibly laggy) the longer a session
+// stayed open. Full history still lives server-side (storage.db); this only
+// bounds the in-memory session cache used for on-screen filtering + CSV export.
+const MAX_CLIENT_HISTORY = 1000;
 let wasAlertActive = false;
 let muted = false;
 let audioCtx = null;
@@ -195,11 +204,22 @@ function animateNumber(el, from, to, duration = 500) {
 // ---------- magnetic hover for buttons ----------
 function attachMagnetic(el, strength = 14) {
   if (!el || prefersReducedMotion) return;
+  let lastX = 0, lastY = 0, pending = false;
   el.addEventListener('mousemove', (e) => {
-    const rect = el.getBoundingClientRect();
-    const x = e.clientX - rect.left - rect.width / 2;
-    const y = e.clientY - rect.top - rect.height / 2;
-    el.style.transform = `translate(${(x / rect.width) * strength}px, ${(y / rect.height) * strength}px)`;
+    // Batch to one style write per animation frame instead of one per raw
+    // mousemove event (getBoundingClientRect() + a style write on every
+    // event is easy to turn into main-thread churn on a page with several
+    // of these attached).
+    lastX = e.clientX; lastY = e.clientY;
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      const rect = el.getBoundingClientRect();
+      const x = lastX - rect.left - rect.width / 2;
+      const y = lastY - rect.top - rect.height / 2;
+      el.style.transform = `translate(${(x / rect.width) * strength}px, ${(y / rect.height) * strength}px)`;
+      pending = false;
+    });
   });
   el.addEventListener('mouseleave', () => { el.style.transform = 'translate(0,0)'; });
 }
@@ -213,7 +233,18 @@ function revealCards() {
 
 // ---------- custom cursor ----------
 function initCustomCursor() {
-  if (window.matchMedia('(pointer: coarse)').matches || prefersReducedMotion) return;
+  // `(pointer: coarse)` reflects the PRIMARY pointing device only. On the
+  // touchscreen/2-in-1 laptops a lot of people actually use, that primary
+  // pointer is reported as "coarse" even while a mouse/trackpad is plugged
+  // in and being used — so this check was silently skipping the entire
+  // cursor setup (never attaching the mousemove listener at all) on any
+  // machine with a touchscreen, which is why the ring/dot never tracked
+  // the mouse. `(any-pointer: fine)` checks whether a precise pointer is
+  // available AT ALL, regardless of what the primary one is, so a mouse or
+  // trackpad on a touchscreen laptop is correctly detected. Pure touch-only
+  // devices (phones/tablets, no fine pointer available) still correctly
+  // get no custom cursor.
+  if (!window.matchMedia('(any-pointer: fine)').matches || prefersReducedMotion) return;
   const dot = document.getElementById('cursor-dot');
   const ring = document.getElementById('cursor-ring');
   if (!dot || !ring) return;
@@ -222,18 +253,22 @@ function initCustomCursor() {
   let mouseX = window.innerWidth / 2, mouseY = window.innerHeight / 2;
   let ringX = mouseX, ringY = mouseY;
   let animating = false;
+  let dotDirty = false;
 
+  // mousemove can fire far more often than the display refreshes (well over
+  // 60/sec on some mice/trackpads). Writing style.transform straight from the
+  // event handler means the browser was doing that work every single event
+  // instead of once per frame — this is what made the cursor (and everything
+  // else on the main thread) feel laggy. Now the handler only records the
+  // latest position; the rAF loop below is the single place that touches the
+  // DOM, so the dot/ring still track the pointer every frame, just without
+  // the redundant extra writes in between frames.
   window.addEventListener('mousemove', (e) => {
     mouseX = e.clientX; mouseY = e.clientY;
-    // Use will-change + translate3d for GPU acceleration
-    dot.style.transform = `translate3d(${mouseX}px, ${mouseY}px, 0) translate(-50%, -50%)`;
-    dot.style.opacity = '1';
-    ring.style.opacity = '1';
-    
-    // Only start ring animation if not already running
+    dotDirty = true;
     if (!animating) {
       animating = true;
-      animateRing();
+      requestAnimationFrame(animateRing);
     }
   }, { passive: true });
   
@@ -247,8 +282,20 @@ function initCustomCursor() {
   });
 
   function animateRing() {
-    ringX += (mouseX - ringX) * 0.18;
-    ringY += (mouseY - ringY) * 0.18;
+    if (dotDirty) {
+      dot.style.transform = `translate3d(${mouseX}px, ${mouseY}px, 0) translate(-50%, -50%)`;
+      dot.style.opacity = '1';
+      ring.style.opacity = '1';
+      dotDirty = false;
+    }
+    // Ring position eases toward the pointer rather than snapping straight
+    // there — that trailing catch-up is intentional (it's what makes the
+    // ring feel like a ring "chasing" the dot instead of a second dot glued
+    // to the first). 0.18 made that catch-up take ~250-300ms on a fast
+    // move, which read as outright lag rather than a subtle trail. 0.45
+    // keeps the same easing feel but resolves in under half the time.
+    ringX += (mouseX - ringX) * 0.45;
+    ringY += (mouseY - ringY) * 0.45;
     ring.style.transform = `translate3d(${ringX}px, ${ringY}px, 0) translate(-50%, -50%)`;
     
     // Stop animation if ring is very close to mouse
@@ -297,6 +344,7 @@ function initParticleField() {
       if (p.x < 0 || p.x > w) p.vx *= -1;
       if (p.y < 0 || p.y > h) p.vy *= -1;
     });
+    const MAX_DIST_SQ = MAX_DIST * MAX_DIST;
     for (let i = 0; i < particles.length; i++) {
       const a = particles[i];
       ctx.fillStyle = 'rgba(201,162,39,0.55)';
@@ -306,8 +354,14 @@ function initParticleField() {
       for (let j = i + 1; j < particles.length; j++) {
         const b = particles[j];
         const dx = a.x - b.x, dy = a.y - b.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < MAX_DIST) {
+        const distSq = dx * dx + dy * dy;
+        // This inner loop runs continuously, every frame, for the life of
+        // the page. Comparing squared distances first avoids a Math.sqrt()
+        // call (one of the pricier primitive ops) for every pair that's
+        // obviously out of range, and we only pay for the real sqrt on the
+        // (much smaller) set of pairs that are actually close enough to draw.
+        if (distSq < MAX_DIST_SQ) {
+          const dist = Math.sqrt(distSq);
           ctx.strokeStyle = `rgba(63,167,150,${0.12 * (1 - dist / MAX_DIST)})`;
           ctx.lineWidth = 1;
           ctx.beginPath();
@@ -435,12 +489,21 @@ function updateSparkline(key, score) {
 // ---------- 3D tilt on mouse move (layered on top of continuous float) ----------
 function attachTilt(card, floatWrap) {
   const maxTilt = 10;
+  let lastX = 0, lastY = 0, pending = false;
   floatWrap.addEventListener('mousemove', (e) => {
-    const rect = card.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width - 0.5;
-    const y = (e.clientY - rect.top) / rect.height - 0.5;
-    floatWrap.classList.add('is-hovering');
-    card.style.transform = `rotateY(${x * maxTilt}deg) rotateX(${-y * maxTilt}deg) translateZ(24px)`;
+    // Same batching as attachMagnetic — one getBoundingClientRect()/style
+    // write per animation frame rather than per raw mousemove event.
+    lastX = e.clientX; lastY = e.clientY;
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      const rect = card.getBoundingClientRect();
+      const x = (lastX - rect.left) / rect.width - 0.5;
+      const y = (lastY - rect.top) / rect.height - 0.5;
+      floatWrap.classList.add('is-hovering');
+      card.style.transform = `rotateY(${x * maxTilt}deg) rotateX(${-y * maxTilt}deg) translateZ(24px)`;
+      pending = false;
+    });
   });
   floatWrap.addEventListener('mouseleave', () => {
     floatWrap.classList.remove('is-hovering');
@@ -580,6 +643,9 @@ const SECTOR_LABEL = { hospital: 'Hospital', power_grid: 'Power Grid', bank: 'Ba
 function addLogEntries(entries) {
   if (!entries || entries.length === 0) return;
   allLogs.push(...entries);
+  if (allLogs.length > MAX_CLIENT_HISTORY) {
+    allLogs.splice(0, allLogs.length - MAX_CLIENT_HISTORY);
+  }
   renderLogs();
 }
 
@@ -769,6 +835,9 @@ function renderAudit() {
 function addAuditEntries(entries) {
   if (!entries || entries.length === 0) return;
   allAudit.push(...entries);
+  if (allAudit.length > MAX_CLIENT_HISTORY) {
+    allAudit.splice(0, allAudit.length - MAX_CLIENT_HISTORY);
+  }
   renderAudit();
 }
 // Initial audit history arrives via the 'audit_log' socket event on connect
