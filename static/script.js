@@ -221,14 +221,23 @@ function initCustomCursor() {
 
   let mouseX = window.innerWidth / 2, mouseY = window.innerHeight / 2;
   let ringX = mouseX, ringY = mouseY;
+  let animating = false;
 
   window.addEventListener('mousemove', (e) => {
     mouseX = e.clientX; mouseY = e.clientY;
-    dot.style.transform = `translate(${mouseX}px, ${mouseY}px) translate(-50%, -50%)`;
+    // Use will-change + translate3d for GPU acceleration
+    dot.style.transform = `translate3d(${mouseX}px, ${mouseY}px, 0) translate(-50%, -50%)`;
     dot.style.opacity = '1';
     ring.style.opacity = '1';
-  });
-  document.addEventListener('mouseleave', () => { dot.style.opacity = '0'; ring.style.opacity = '0'; });
+    
+    // Only start ring animation if not already running
+    if (!animating) {
+      animating = true;
+      animateRing();
+    }
+  }, { passive: true });
+  
+  document.addEventListener('mouseleave', () => { dot.style.opacity = '0'; ring.style.opacity = '0'; animating = false; });
 
   document.addEventListener('mouseover', (e) => {
     if (e.target.closest('button, select, .node-group, .sector-card')) ring.classList.add('is-active');
@@ -237,12 +246,18 @@ function initCustomCursor() {
     if (e.target.closest('button, select, .node-group, .sector-card')) ring.classList.remove('is-active');
   });
 
-  (function loop() {
+  function animateRing() {
     ringX += (mouseX - ringX) * 0.18;
     ringY += (mouseY - ringY) * 0.18;
-    ring.style.transform = `translate(${ringX}px, ${ringY}px) translate(-50%, -50%)`;
-    requestAnimationFrame(loop);
-  })();
+    ring.style.transform = `translate3d(${ringX}px, ${ringY}px, 0) translate(-50%, -50%)`;
+    
+    // Stop animation if ring is very close to mouse
+    if (Math.abs(mouseX - ringX) > 1 || Math.abs(mouseY - ringY) > 1) {
+      requestAnimationFrame(animateRing);
+    } else {
+      animating = false;
+    }
+  }
 }
 
 // ---------- ambient sector-network particle field ----------
@@ -565,16 +580,7 @@ const SECTOR_LABEL = { hospital: 'Hospital', power_grid: 'Power Grid', bank: 'Ba
 function addLogEntries(entries) {
   if (!entries || entries.length === 0) return;
   allLogs.push(...entries);
-  // When the analyst is looking at "My Queue", a fresh anomaly shouldn't
-  // silently swap the panel back to the chronological "All Events" render —
-  // re-pull the queue instead so the new alert lands in the right spot
-  // (respecting the current status filter / sort) with its full drill-down
-  // data intact.
-  if (typeof currentQueueView !== 'undefined' && currentQueueView === 'queue') {
-    loadAnalystQueue();
-  } else {
-    renderLogs();
-  }
+  renderLogs();
 }
 
 function getFilteredLogs() {
@@ -642,47 +648,23 @@ function renderLogs() {
     logScroll.appendChild(div);
   });
 
-  wireTriageButtons();
-}
-
-// Shared by the "All Events" list and the "My Queue" view — both render
-// into #log-scroll, so one wiring pass after either render picks up all
-// the triage buttons currently on screen.
-function wireTriageButtons() {
-  if (!IS_ANALYST) return;
-  logScroll.querySelectorAll('.triage-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation(); // don't also trigger a queue row's drill-down click
-      const id = parseInt(btn.dataset.id, 10);
-      const status = btn.dataset.status;
-      socket.emit('update_alert_status', { id, status });
-      btn.disabled = true;
+  if (IS_ANALYST) {
+    logScroll.querySelectorAll('.triage-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id, 10);
+        const status = btn.dataset.status;
+        socket.emit('update_alert_status', { id, status });
+        btn.disabled = true;
+      });
     });
-  });
+  }
 }
 
 function applyAlertStatusUpdate({ id, status }) {
   const entry = allLogs.find(e => e.id === id);
-  if (entry) entry.status = status;
-
-  const queueEntry = currentQueue.find(e => e.id === id);
-  if (queueEntry) queueEntry.status = status;
-
-  if (currentQueueView === 'queue') {
-    // Status changes can move an alert out of the current filter (e.g.
-    // resolving it while viewing "Unresolved"), so re-pull from the server
-    // rather than just re-rendering the stale local array.
-    loadAnalystQueue();
-  } else {
-    renderLogs();
-  }
-
-  // Keep an open drill-down card in sync if it's showing this alert.
-  const modal = document.getElementById('drill-down-modal');
-  if (modal && modal.classList.contains('active') && modal.dataset.alertId === String(id)) {
-    const updated = queueEntry || entry;
-    if (updated) showDrillDown(updated);
-  }
+  if (!entry) return;
+  entry.status = status;
+  renderLogs();
 }
 
 function downloadCSV() {
@@ -991,13 +973,8 @@ socket.on('alert_status_updated', (payload) => {
 socket.on('demo_reset', () => {
   allLogs.length = 0;
   allAudit.length = 0;
-  currentQueue = [];
+  renderLogs();
   renderAudit();
-  if (currentQueueView === 'queue') {
-    loadAnalystQueue();
-  } else {
-    renderLogs();
-  }
 });
 
 // ---------- admin quick-panel ----------
@@ -1079,63 +1056,61 @@ async function loadAnalystQueue() {
     
     const data = await resp.json();
     currentQueue = data.queue || [];
-
+    
     renderQueue(currentQueue);
-
+    
     const countBadge = document.getElementById('queue-count');
     if (countBadge) {
-      const filterLabel = { unresolved: 'unresolved', new: 'new', acknowledged: 'acknowledged', all: 'total' }[statusFilter] || 'unresolved';
-      countBadge.textContent = `${data.count} ${filterLabel}`;
+      countBadge.textContent = `${data.count} unresolved`;
     }
   } catch (err) {
     console.error('Queue load failed:', err);
   }
 }
 
-function slaBadgeClassFor(ageMinutes) {
-  if (ageMinutes >= 15) return 'critical';
-  if (ageMinutes >= 5) return 'warn';
-  return 'ok';
-}
-
 function renderQueue(queue) {
+  const logScroll = document.getElementById('log-scroll');
   if (!logScroll) return;
-
+  
   logScroll.innerHTML = '';
-
+  
   if (queue.length === 0) {
     logScroll.innerHTML = '<div class="log-empty">No unresolved alerts. Great work!</div>';
     return;
   }
-
-  const now = Date.now() / 1000;
-
-  queue.forEach((alert) => {
+  
+  const now = time.time ? time.time() : Date.now() / 1000;
+  
+  queue.forEach((alert, idx) => {
     const entry = document.createElement('div');
-    entry.className = `log-entry expandable ${alert.severity === 'high' ? 'high' : ''}`;
-    if (alert.id != null) entry.dataset.logId = alert.id;
-
-    const ts = alert.ts || now;
-    const ageMinutes = Math.floor((now - ts) / 60);
-    const badgeClass = slaBadgeClassFor(ageMinutes);
-
+    entry.className = 'log-entry expandable';
+    entry.style.cursor = 'pointer';
+    
+    const ts = alert.ts || now - (idx * 60); // Rough estimate if ts missing
+    const ageSeconds = now - ts;
+    const ageMinutes = Math.floor(ageSeconds / 60);
+    
+    // SLA badge
+    let slaBadgeClass = 'ok'; // <5 min
+    if (ageMinutes >= 15) slaBadgeClass = 'critical';
+    else if (ageMinutes >= 5) slaBadgeClass = 'warn';
+    
+    const severityClass = alert.severity === 'high' ? 'severe' : 'medium';
+    const statusBadge = `<span class="status-badge status-${alert.status || 'new'}">${(alert.status || 'new').toUpperCase()}</span>`;
+    
     entry.innerHTML = `
-      <div class="log-entry-row">
-        <span class="time">${alert.time}</span>
-        <span class="sector-tag">${SECTOR_LABEL[alert.sector] || alert.sector}</span>
-        ${mitreTagFor(alert)}
-        <span class="sla-badge ${badgeClass}" title="Time since detection">${ageMinutes}m ago</span>
-        ${statusBadge(alert)}
-      </div>
-      <span class="msg">${alert.message}</span>
-      ${triageActionsFor(alert)}
+      <span class="log-time">${alert.time}</span>
+      <span class="log-sector">${alert.sector.replace('_', ' ').toUpperCase()}</span>
+      <span class="log-severity ${severityClass}">${alert.severity?.toUpperCase() || 'MEDIUM'}</span>
+      ${statusBadge}
+      <span class="sla-badge ${slaBadgeClass}">${ageMinutes}m ago</span>
+      <span class="log-message">${alert.message}</span>
+      ${alert.mitre_id ? `<span class="log-mitre">${alert.mitre_id}</span>` : ''}
     `;
-
+    
     entry.addEventListener('click', () => showDrillDown(alert));
     logScroll.appendChild(entry);
   });
-
-  wireTriageButtons();
 }
 
 function showDrillDown(alert) {
@@ -1148,7 +1123,6 @@ function showDrillDown(alert) {
     });
     document.body.appendChild(modal);
   }
-  modal.dataset.alertId = alert.id != null ? String(alert.id) : '';
   
   const forestRisk = alert.forest_risk || 0;
   const trendRisk = alert.trend_risk || 0;
@@ -1236,45 +1210,37 @@ function showDrillDown(alert) {
         ${playbookHTML}
       </div>
       ` : ''}
-
-      ${IS_ANALYST && alert.status ? `
-      <div class="drill-down-section drill-down-actions">
-        ${triageActionsFor(alert)}
-      </div>
-      ` : ''}
     </div>
   `;
-
+  
   modal.classList.add('active');
-  if (IS_ANALYST) {
-    modal.querySelectorAll('.triage-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = parseInt(btn.dataset.id, 10);
-        const status = btn.dataset.status;
-        socket.emit('update_alert_status', { id, status });
-        btn.disabled = true;
-      });
-    });
-  }
 }
 
 function updateSLATimes() {
-  if (!IS_ANALYST || currentQueueView !== 'queue') return;
-
-  const now = Date.now() / 1000;
-
-  document.querySelectorAll('.log-entry.expandable[data-log-id]').forEach(entry => {
-    const id = parseInt(entry.dataset.logId, 10);
-    const alert = currentQueue.find(e => e.id === id);
-    if (!alert) return;
-
+  const role = document.body.getAttribute('data-role');
+  if (role !== 'analyst' && role !== 'admin' || currentQueueView !== 'queue') return;
+  
+  const entries = document.querySelectorAll('.log-entry.expandable');
+  const now = Math.floor(Date.now() / 1000);
+  let idx = 0;
+  
+  entries.forEach(entry => {
+    if (idx >= currentQueue.length) return;
+    const alert = currentQueue[idx];
     const ts = alert.ts || now;
     const ageMinutes = Math.floor((now - ts) / 60);
+    
+    let slaBadgeClass = 'ok';
+    if (ageMinutes >= 15) slaBadgeClass = 'critical';
+    else if (ageMinutes >= 5) slaBadgeClass = 'warn';
+    
     const badge = entry.querySelector('.sla-badge');
     if (badge) {
       badge.textContent = `${ageMinutes}m ago`;
-      badge.className = `sla-badge ${slaBadgeClassFor(ageMinutes)}`;
+      badge.className = `sla-badge ${slaBadgeClass}`;
     }
+    
+    idx++;
   });
 }
 
@@ -1283,3 +1249,39 @@ document.addEventListener('DOMContentLoaded', initQueueView);
 
 // Update SLA times every 10 seconds while in queue view
 setInterval(updateSLATimes, 10000);
+
+// ========== PERFORMANCE MODE ==========
+
+function initPerformanceMode() {
+  const perfBtn = document.getElementById('perf-mode-btn');
+  if (!perfBtn) return;
+  
+  const perfMode = localStorage.getItem('kavach_perf_mode') === 'true';
+  if (perfMode) {
+    document.body.classList.add('perf-mode');
+    perfBtn.classList.add('active');
+  }
+  
+  perfBtn.addEventListener('click', () => {
+    const isEnabled = document.body.classList.toggle('perf-mode');
+    perfBtn.classList.toggle('active', isEnabled);
+    localStorage.setItem('kavach_perf_mode', isEnabled);
+    
+    if (isEnabled) {
+      perfBtn.title = 'Performance mode enabled (animations off)';
+      // Disable cursor tracking if active
+      const dot = document.getElementById('cursor-dot');
+      const ring = document.getElementById('cursor-ring');
+      if (dot) dot.style.display = 'none';
+      if (ring) ring.style.display = 'none';
+    } else {
+      perfBtn.title = 'Performance mode disabled (animations on)';
+      const dot = document.getElementById('cursor-dot');
+      const ring = document.getElementById('cursor-ring');
+      if (dot) dot.style.display = '';
+      if (ring) ring.style.display = '';
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', initPerformanceMode);

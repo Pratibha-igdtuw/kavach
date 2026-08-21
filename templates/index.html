@@ -47,6 +47,7 @@
         <a class="logout-link" href="{{ url_for('logout') }}" title="Sign out">⏻</a>
       </div>
       <button class="mute-btn" id="mute-btn" title="Toggle alert sound">🔊</button>
+      <button class="mute-btn" id="perf-mode-btn" title="Toggle performance mode (disable animations)">⚡</button>
       <div class="status-pill" id="global-status">
         <span class="dot"></span>
         <span id="global-status-text">MONITORING</span>
@@ -240,16 +241,5 @@
   <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
   <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
   <script src="{{ url_for('static', filename='script.js') }}"></script>
-<!-- Case Management Panel -->
-<div id="case-management-container">
-  <!-- Copy the entire content from case_management_template.html here -->
-</div>
-// Initialize Case Management UI
-const caseUI = new CaseManagementUI(socket);
-
-// Expose it globally so the HTML buttons can call it
-window.caseUI = caseUI;
-
-<script src="static/case_management_frontend.js"></script>
 </body>
 </html>

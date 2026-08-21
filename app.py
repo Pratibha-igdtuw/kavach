@@ -282,7 +282,11 @@ def background_loop():
 
             if result["is_anomaly"] and not sector_contained:
                 atype = result["predicted_attack_type"]
-                atype_label = ATTACK_SIGNATURES[atype]["label"] if atype else "Unclassified"
+                # FIXED: Added defensive check to prevent KeyError if unexpected attack type
+                if atype and atype in ATTACK_SIGNATURES:
+                    atype_label = ATTACK_SIGNATURES[atype]["label"]
+                else:
+                    atype_label = "Unclassified"
                 mitre = MITRE_MAPPING.get(atype)
                 
                 # Recommended actions from playbook

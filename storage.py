@@ -1,508 +1,24 @@
 """
 SQLite persistence for the anomaly log, risk-score history, user accounts,
-and the audit trail — so the dashboard survives restarts, renders historical
-trend charts, and keeps a durable record of who did what.
+audit trail, and case management — so the dashboard survives restarts, renders
+historical trend charts, keeps a durable record of who did what, and supports
+incident grouping, linking, and team collaboration.
+
+Tables:
+  - log: Anomaly detections (individual alerts)
+  - risk_history: Time-series risk scores per sector
+  - users: User accounts (analyst/executive/admin)
+  - audit_log: Compliance audit trail (who did what when)
+  - sector_thresholds: Per-sector alert/critical thresholds
+  - notifier_config: Webhook configuration (Slack/Discord)
+  - incident: Main case/incident record
+  - incident_alert: M:N link (alerts → incidents)
+  - incident_link: Incident relationships (related, chain, etc.)
+  - incident_comment: Collaboration thread per incident
 """
-import json
 import sqlite3
 import time
 from contextlib import contextmanager
-"""
-Case Management Extensions for KAVACH
-Extends the storage layer to support:
-  - Incident grouping (multiple logs → one case)
-  - Incident linking (related incidents, attack chains)
-  - Collaboration (comments, notes per incident)
-  - Timeline view (all events in a case, chronological)
-
-Add these functions to storage.py after the existing audit/notifier sections.
-"""
-import json
-import sqlite3
-import time
-from contextlib import contextmanager
-
-DB_PATH = "kavach.db"
-
-
-@contextmanager
-def _conn():
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    try:
-        yield c
-        c.commit()
-    finally:
-        c.close()
-
-
-def init_case_management_db():
-    """Add case management schema to an existing KAVACH database.
-    
-    New tables:
-      - incident: Main case/incident record (title, description, status, severity)
-      - incident_alert: M:N link between incidents and log entries
-      - incident_link: Relationship between two incidents (related, chain, etc.)
-      - incident_comment: Thread of analyst notes/comments per incident
-    
-    Call once during app startup (safe to call on existing DB).
-    """
-    with _conn() as c:
-        # Main incident/case record
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS incident (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT,
-                status TEXT NOT NULL DEFAULT 'open',
-                severity TEXT NOT NULL DEFAULT 'medium',
-                sector TEXT,
-                ts REAL NOT NULL,
-                created_by TEXT NOT NULL,
-                closed_ts REAL,
-                closed_by TEXT,
-                root_cause TEXT,
-                resolution_summary TEXT
-            )
-        """)
-        
-        # M:N link: which alerts belong to this incident
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS incident_alert (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                incident_id INTEGER NOT NULL,
-                log_id INTEGER NOT NULL,
-                added_ts REAL NOT NULL,
-                added_by TEXT NOT NULL,
-                FOREIGN KEY(incident_id) REFERENCES incident(id) ON DELETE CASCADE,
-                FOREIGN KEY(log_id) REFERENCES log(id) ON DELETE CASCADE,
-                UNIQUE(incident_id, log_id)
-            )
-        """)
-        
-        # Related incidents (attack chains, correlated events)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS incident_link (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                incident_id_a INTEGER NOT NULL,
-                incident_id_b INTEGER NOT NULL,
-                relation_type TEXT NOT NULL DEFAULT 'related',
-                notes TEXT,
-                created_ts REAL NOT NULL,
-                created_by TEXT NOT NULL,
-                FOREIGN KEY(incident_id_a) REFERENCES incident(id) ON DELETE CASCADE,
-                FOREIGN KEY(incident_id_b) REFERENCES incident(id) ON DELETE CASCADE,
-                UNIQUE(incident_id_a, incident_id_b, relation_type)
-            )
-        """)
-        
-        # Comments/collaboration thread per incident
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS incident_comment (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                incident_id INTEGER NOT NULL,
-                author TEXT NOT NULL,
-                body TEXT NOT NULL,
-                ts REAL NOT NULL,
-                edited_ts REAL,
-                edited_by TEXT,
-                FOREIGN KEY(incident_id) REFERENCES incident(id) ON DELETE CASCADE
-            )
-        """)
-        
-        # Indices for common queries
-        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_status ON incident(status)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_sector ON incident(sector)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_ts ON incident(ts)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_alert_incident ON incident_alert(incident_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_alert_log ON incident_alert(log_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_link_a ON incident_link(incident_id_a)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_link_b ON incident_link(incident_id_b)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_comment_incident ON incident_comment(incident_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_comment_ts ON incident_comment(ts)")
-
-
-# ============================================================================
-# INCIDENT CRUD
-# ============================================================================
-
-def create_incident(title, description, sector, severity, created_by):
-    """Create a new incident/case. Returns the incident ID."""
-    with _conn() as c:
-        cur = c.execute(
-            "INSERT INTO incident (title, description, sector, severity, status, ts, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (title, description, sector, severity, "open", time.time(), created_by),
-        )
-        return cur.lastrowid
-
-
-def get_incident(incident_id):
-    """Fetch a single incident by ID with all metadata."""
-    with _conn() as c:
-        row = c.execute("SELECT * FROM incident WHERE id = ?", (incident_id,)).fetchone()
-        return dict(row) if row else None
-
-
-def list_incidents(status=None, sector=None, limit=100, offset=0):
-    """List incidents with optional filters. Returns list of dicts."""
-    clauses = []
-    params = []
-    
-    if status:
-        clauses.append("status = ?")
-        params.append(status)
-    if sector:
-        clauses.append("sector = ?")
-        params.append(sector)
-    
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    
-    with _conn() as c:
-        rows = c.execute(
-            f"SELECT * FROM incident {where} ORDER BY ts DESC LIMIT ? OFFSET ?",
-            (*params, limit, offset),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def update_incident(incident_id, **kwargs):
-    """Update incident fields (title, description, status, severity, 
-    root_cause, resolution_summary, closed_ts, closed_by)."""
-    allowed_fields = {
-        "title", "description", "status", "severity", 
-        "root_cause", "resolution_summary", "closed_ts", "closed_by"
-    }
-    updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
-    
-    if not updates:
-        return False
-    
-    set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-    with _conn() as c:
-        c.execute(
-            f"UPDATE incident SET {set_clause} WHERE id = ?",
-            (*updates.values(), incident_id),
-        )
-        return True
-
-
-def close_incident(incident_id, root_cause, resolution_summary, closed_by):
-    """Mark an incident as closed with root cause and resolution."""
-    return update_incident(
-        incident_id,
-        status="closed",
-        root_cause=root_cause,
-        resolution_summary=resolution_summary,
-        closed_ts=time.time(),
-        closed_by=closed_by,
-    )
-
-
-def delete_incident(incident_id):
-    """Delete an incident (cascades to alerts, links, comments)."""
-    with _conn() as c:
-        c.execute("DELETE FROM incident WHERE id = ?", (incident_id,))
-
-
-# ============================================================================
-# INCIDENT ↔ ALERT LINKING
-# ============================================================================
-
-def add_alert_to_incident(incident_id, log_id, added_by):
-    """Associate a log entry (alert) with an incident."""
-    with _conn() as c:
-        try:
-            c.execute(
-                "INSERT INTO incident_alert (incident_id, log_id, added_ts, added_by) "
-                "VALUES (?, ?, ?, ?)",
-                (incident_id, log_id, time.time(), added_by),
-            )
-            return True
-        except sqlite3.IntegrityError:
-            # Already linked
-            return False
-
-
-def remove_alert_from_incident(incident_id, log_id):
-    """Unlink an alert from an incident."""
-    with _conn() as c:
-        c.execute(
-            "DELETE FROM incident_alert WHERE incident_id = ? AND log_id = ?",
-            (incident_id, log_id),
-        )
-
-
-def get_incident_alerts(incident_id):
-    """Fetch all alerts (log entries) for an incident, chronologically."""
-    with _conn() as c:
-        rows = c.execute(
-            """
-            SELECT l.id, l.ts, l.time_str, l.sector, l.message, l.severity, l.attack_type,
-                   l.status, l.mitre_id, l.mitre_label, l.forest_risk, l.trend_risk,
-                   l.metric_scores
-            FROM log l
-            INNER JOIN incident_alert ia ON l.id = ia.log_id
-            WHERE ia.incident_id = ?
-            ORDER BY l.ts ASC
-            """,
-            (incident_id,),
-        ).fetchall()
-        
-        results = []
-        for r in rows:
-            d = dict(r)
-            raw_scores = d.pop("metric_scores", None)
-            try:
-                d["metric_scores"] = json.loads(raw_scores) if raw_scores else {}
-            except (TypeError, ValueError):
-                d["metric_scores"] = {}
-            d["forest_risk"] = d.get("forest_risk") or 0.0
-            d["trend_risk"] = d.get("trend_risk") or 0.0
-            results.append(d)
-        return results
-
-
-def get_alert_incidents(log_id):
-    """Fetch all incidents a log entry (alert) is part of."""
-    with _conn() as c:
-        rows = c.execute(
-            """
-            SELECT i.* FROM incident i
-            INNER JOIN incident_alert ia ON i.id = ia.incident_id
-            WHERE ia.log_id = ?
-            ORDER BY i.ts DESC
-            """,
-            (log_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-# ============================================================================
-# INCIDENT LINKING (RELATIONSHIPS)
-# ============================================================================
-
-def link_incidents(incident_id_a, incident_id_b, relation_type, notes, created_by):
-    """Create a link between two incidents (related, chain, etc.).
-    
-    relation_type can be: 'related', 'chain', 'copied', 'duplicate'.
-    Automatically normalizes so lower ID is always 'a' for dedup.
-    """
-    # Normalize: always store with lower ID as 'a'
-    if incident_id_a > incident_id_b:
-        incident_id_a, incident_id_b = incident_id_b, incident_id_a
-    
-    with _conn() as c:
-        try:
-            c.execute(
-                "INSERT INTO incident_link "
-                "(incident_id_a, incident_id_b, relation_type, notes, created_ts, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (incident_id_a, incident_id_b, relation_type, notes, time.time(), created_by),
-            )
-            return True
-        except sqlite3.IntegrityError:
-            # Link already exists
-            return False
-
-
-def unlink_incidents(incident_id_a, incident_id_b, relation_type):
-    """Remove a link between two incidents."""
-    if incident_id_a > incident_id_b:
-        incident_id_a, incident_id_b = incident_id_b, incident_id_a
-    
-    with _conn() as c:
-        c.execute(
-            "DELETE FROM incident_link "
-            "WHERE incident_id_a = ? AND incident_id_b = ? AND relation_type = ?",
-            (incident_id_a, incident_id_b, relation_type),
-        )
-
-
-def get_incident_links(incident_id):
-    """Fetch all linked incidents (both directions) for a given incident."""
-    with _conn() as c:
-        # Links where this incident is 'a'
-        rows_a = c.execute(
-            """
-            SELECT il.*, i.title, i.status, i.severity, i.sector
-            FROM incident_link il
-            INNER JOIN incident i ON il.incident_id_b = i.id
-            WHERE il.incident_id_a = ?
-            """,
-            (incident_id,),
-        ).fetchall()
-        
-        # Links where this incident is 'b'
-        rows_b = c.execute(
-            """
-            SELECT il.*, i.title, i.status, i.severity, i.sector
-            FROM incident_link il
-            INNER JOIN incident i ON il.incident_id_a = i.id
-            WHERE il.incident_id_b = ?
-            """,
-            (incident_id,),
-        ).fetchall()
-        
-        return {
-            "outgoing": [dict(r) for r in rows_a],
-            "incoming": [dict(r) for r in rows_b],
-        }
-
-
-# ============================================================================
-# INCIDENT COMMENTS / COLLABORATION
-# ============================================================================
-
-def add_comment(incident_id, author, body):
-    """Add a comment to an incident."""
-    with _conn() as c:
-        cur = c.execute(
-            "INSERT INTO incident_comment (incident_id, author, body, ts) "
-            "VALUES (?, ?, ?, ?)",
-            (incident_id, author, body, time.time()),
-        )
-        return cur.lastrowid
-
-
-def get_incident_comments(incident_id):
-    """Fetch all comments for an incident, chronologically."""
-    with _conn() as c:
-        rows = c.execute(
-            "SELECT * FROM incident_comment WHERE incident_id = ? ORDER BY ts ASC",
-            (incident_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def update_comment(comment_id, body, edited_by):
-    """Edit a comment."""
-    with _conn() as c:
-        c.execute(
-            "UPDATE incident_comment SET body = ?, edited_ts = ?, edited_by = ? WHERE id = ?",
-            (body, time.time(), edited_by, comment_id),
-        )
-
-
-def delete_comment(comment_id):
-    """Delete a comment."""
-    with _conn() as c:
-        c.execute("DELETE FROM incident_comment WHERE id = ?", (comment_id,))
-
-
-# ============================================================================
-# ANALYTICS / TIMELINES
-# ============================================================================
-
-def get_incident_timeline(incident_id):
-    """Fetch a complete timeline of an incident:
-    - All linked alerts (from incident_alert)
-    - All incident status changes / metadata updates (audit trail)
-    - All comments
-    
-    Merged and sorted by timestamp for a comprehensive narrative view.
-    """
-    alerts = get_incident_alerts(incident_id)
-    comments = get_incident_comments(incident_id)
-    
-    timeline_events = []
-    
-    # Add alerts as events
-    for alert in alerts:
-        timeline_events.append({
-            "type": "alert",
-            "ts": alert["ts"],
-            "time_str": alert["time_str"],
-            "severity": alert["severity"],
-            "sector": alert["sector"],
-            "message": alert["message"],
-            "attack_type": alert.get("attack_type"),
-            "mitre_id": alert.get("mitre_id"),
-            "log_id": alert["id"],
-        })
-    
-    # Add comments as events
-    for comment in comments:
-        timeline_events.append({
-            "type": "comment",
-            "ts": comment["ts"],
-            "author": comment["author"],
-            "body": comment["body"],
-            "edited_ts": comment.get("edited_ts"),
-            "edited_by": comment.get("edited_by"),
-        })
-    
-    # Sort by timestamp
-    timeline_events.sort(key=lambda x: x["ts"])
-    
-    return timeline_events
-
-
-def suggest_incident_links(incident_id):
-    """Suggest other incidents to link (based on MITRE technique, sector, time window).
-    
-    Returns list of incidents sorted by relevance score.
-    """
-    current = get_incident(incident_id)
-    if not current:
-        return []
-    
-    # Get MITRE techniques from alerts in this incident
-    alerts = get_incident_alerts(incident_id)
-    techniques = set(a.get("mitre_id") for a in alerts if a.get("mitre_id"))
-    
-    # Find other open incidents in same sector or with same MITRE technique
-    # created in the last 30 days
-    cutoff = time.time() - (30 * 24 * 60 * 60)
-    
-    with _conn() as c:
-        rows = c.execute(
-            """
-            SELECT DISTINCT i.id, i.title, i.sector, i.status, i.ts,
-                   COUNT(DISTINCT ia.log_id) as alert_count
-            FROM incident i
-            LEFT JOIN incident_alert ia ON i.id = ia.incident_id
-            WHERE i.id != ? AND i.ts >= ? AND i.status IN ('open', 'investigating')
-              AND (i.sector = ? OR EXISTS (
-                SELECT 1 FROM incident_alert ia2
-                INNER JOIN log l ON ia2.log_id = l.id
-                WHERE ia2.incident_id = i.id AND l.mitre_id IN (?, ?)
-              ))
-            GROUP BY i.id
-            ORDER BY i.ts DESC
-            LIMIT 10
-            """,
-            (incident_id, cutoff, current.get("sector"), 
-             list(techniques)[0] if techniques else None,
-             list(techniques)[1] if len(techniques) > 1 else None),
-        ).fetchall()
-        
-        return [dict(r) for r in rows]
-
-
-def incident_stats():
-    """Return incident summary statistics."""
-    with _conn() as c:
-        total = c.execute("SELECT COUNT(*) as cnt FROM incident").fetchone()["cnt"]
-        open_incidents = c.execute(
-            "SELECT COUNT(*) as cnt FROM incident WHERE status IN ('open', 'investigating')"
-        ).fetchone()["cnt"]
-        closed = c.execute(
-            "SELECT COUNT(*) as cnt FROM incident WHERE status = 'closed'"
-        ).fetchone()["cnt"]
-        
-        # Average time to close
-        closed_times = c.execute(
-            "SELECT AVG(closed_ts - ts) as avg_time FROM incident WHERE status = 'closed' AND closed_ts IS NOT NULL"
-        ).fetchone()
-        avg_close_time = int(closed_times["avg_time"]) if closed_times["avg_time"] else 0
-        
-        return {
-            "total": total,
-            "open": open_incidents,
-            "closed": closed,
-            "avg_time_to_close_seconds": avg_close_time,
-        }
 
 DB_PATH = "kavach.db"
 
@@ -602,18 +118,13 @@ def init_db():
             "ack_ts": "ALTER TABLE log ADD COLUMN ack_ts REAL",
             "resolved_by": "ALTER TABLE log ADD COLUMN resolved_by TEXT",
             "resolved_ts": "ALTER TABLE log ADD COLUMN resolved_ts REAL",
-            # Analyst investigation drill-down data (forest/trend risk split +
-            # per-metric z-scores). Without these, the drill-down card only
-            # has real numbers for alerts that arrived in this browser tab
-            # since page load — anything loaded from the DB (queue view on
-            # refresh, another tab, the next day) would show zeros.
-            "forest_risk": "ALTER TABLE log ADD COLUMN forest_risk REAL",
-            "trend_risk": "ALTER TABLE log ADD COLUMN trend_risk REAL",
-            "metric_scores": "ALTER TABLE log ADD COLUMN metric_scores TEXT",
         }
         for col, ddl in migrations.items():
             if col not in existing_cols:
                 c.execute(ddl)
+
+        # Initialize case management tables (safe to call on existing DB)
+    init_case_management_db()
 
 
 # ---------------- anomaly log ----------------
@@ -622,21 +133,15 @@ def insert_log(entry):
     """Inserts a log/anomaly entry. If entry carries a `status` (i.e. it's a
     genuine anomaly that belongs in the triage queue, as opposed to a
     propagation/manual/system note), that status plus MITRE mapping fields
-    and the investigation drill-down data (forest/trend risk, per-metric
-    z-scores) are persisted too, so the drill-down survives a page reload
-    or a restart, not just the lifetime of one live socket connection.
-    Returns the new row's id so callers can reference it for later triage
-    state changes."""
+    are persisted too. Returns the new row's id so callers can reference it
+    for later triage state changes."""
     with _conn() as c:
         cur = c.execute(
             "INSERT INTO log (ts, time_str, sector, message, severity, attack_type, "
-            "status, mitre_id, mitre_label, forest_risk, trend_risk, metric_scores) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "status, mitre_id, mitre_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (time.time(), entry["time"], entry["sector"], entry["message"],
              entry["severity"], entry.get("attack_type"), entry.get("status"),
-             entry.get("mitre_id"), entry.get("mitre_label"),
-             entry.get("forest_risk"), entry.get("trend_risk"),
-             json.dumps(entry["metric_scores"]) if entry.get("metric_scores") else None),
+             entry.get("mitre_id"), entry.get("mitre_label")),
         )
         return cur.lastrowid
 
@@ -653,22 +158,10 @@ def recent_logs(limit=30):
     with _conn() as c:
         rows = c.execute(
             "SELECT id, ts, time_str as time, sector, message, severity, attack_type, "
-            "status, mitre_id, mitre_label, ack_by, ack_ts, resolved_by, resolved_ts, "
-            "forest_risk, trend_risk, metric_scores "
+            "status, mitre_id, mitre_label, ack_by, ack_ts, resolved_by, resolved_ts "
             "FROM log ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
-        results = []
-        for r in reversed(rows):
-            d = dict(r)
-            raw_scores = d.pop("metric_scores", None)
-            try:
-                d["metric_scores"] = json.loads(raw_scores) if raw_scores else {}
-            except (TypeError, ValueError):
-                d["metric_scores"] = {}
-            d["forest_risk"] = d.get("forest_risk") or 0.0
-            d["trend_risk"] = d.get("trend_risk") or 0.0
-            results.append(d)
-        return results
+        return [dict(r) for r in reversed(rows)]
 
 
 def update_alert_status(log_id, status, actor):
@@ -1031,3 +524,466 @@ def top_incidents_this_week(limit=10):
             (cutoff, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ============================================================================
+# CASE MANAGEMENT — Incident Grouping, Linking, Collaboration
+# ============================================================================
+
+def init_case_management_db():
+    """Add case management schema to an existing KAVACH database.
+    
+    New tables:
+      - incident: Main case/incident record (title, description, status, severity)
+      - incident_alert: M:N link between incidents and log entries
+      - incident_link: Relationship between two incidents (related, chain, etc.)
+      - incident_comment: Thread of analyst notes/comments per incident
+    
+    Call once during app startup (safe to call on existing DB).
+    """
+    with _conn() as c:
+        # Main incident/case record
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS incident (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                severity TEXT NOT NULL DEFAULT 'medium',
+                sector TEXT,
+                ts REAL NOT NULL,
+                created_by TEXT NOT NULL,
+                closed_ts REAL,
+                closed_by TEXT,
+                root_cause TEXT,
+                resolution_summary TEXT
+            )
+        """)
+        
+        # M:N link: which alerts belong to this incident
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS incident_alert (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER NOT NULL,
+                log_id INTEGER NOT NULL,
+                added_ts REAL NOT NULL,
+                added_by TEXT NOT NULL,
+                FOREIGN KEY(incident_id) REFERENCES incident(id) ON DELETE CASCADE,
+                FOREIGN KEY(log_id) REFERENCES log(id) ON DELETE CASCADE,
+                UNIQUE(incident_id, log_id)
+            )
+        """)
+        
+        # Related incidents (attack chains, correlated events)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS incident_link (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id_a INTEGER NOT NULL,
+                incident_id_b INTEGER NOT NULL,
+                relation_type TEXT NOT NULL DEFAULT 'related',
+                notes TEXT,
+                created_ts REAL NOT NULL,
+                created_by TEXT NOT NULL,
+                FOREIGN KEY(incident_id_a) REFERENCES incident(id) ON DELETE CASCADE,
+                FOREIGN KEY(incident_id_b) REFERENCES incident(id) ON DELETE CASCADE,
+                UNIQUE(incident_id_a, incident_id_b, relation_type)
+            )
+        """)
+        
+        # Comments/collaboration thread per incident
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS incident_comment (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER NOT NULL,
+                author TEXT NOT NULL,
+                body TEXT NOT NULL,
+                ts REAL NOT NULL,
+                edited_ts REAL,
+                edited_by TEXT,
+                FOREIGN KEY(incident_id) REFERENCES incident(id) ON DELETE CASCADE
+            )
+        """)
+        
+        # Indices for common queries
+        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_status ON incident(status)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_sector ON incident(sector)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_ts ON incident(ts)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_alert_incident ON incident_alert(incident_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_alert_log ON incident_alert(log_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_link_a ON incident_link(incident_id_a)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_link_b ON incident_link(incident_id_b)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_comment_incident ON incident_comment(incident_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_incident_comment_ts ON incident_comment(ts)")
+
+
+# ---- INCIDENT CRUD ----
+
+def create_incident(title, description, sector, severity, created_by):
+    """Create a new incident/case. Returns the incident ID."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO incident (title, description, sector, severity, status, ts, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (title, description, sector, severity, "open", time.time(), created_by),
+        )
+        return cur.lastrowid
+
+
+def get_incident(incident_id):
+    """Fetch a single incident by ID with all metadata."""
+    with _conn() as c:
+        row = c.execute("SELECT * FROM incident WHERE id = ?", (incident_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_incidents(status=None, sector=None, limit=100, offset=0):
+    """List incidents with optional filters. Returns list of dicts."""
+    clauses = []
+    params = []
+    
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if sector:
+        clauses.append("sector = ?")
+        params.append(sector)
+    
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT * FROM incident {where} ORDER BY ts DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_incident(incident_id, **kwargs):
+    """Update incident fields (title, description, status, severity, 
+    root_cause, resolution_summary, closed_ts, closed_by)."""
+    allowed_fields = {
+        "title", "description", "status", "severity", 
+        "root_cause", "resolution_summary", "closed_ts", "closed_by"
+    }
+    updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
+    
+    if not updates:
+        return False
+    
+    set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+    with _conn() as c:
+        c.execute(
+            f"UPDATE incident SET {set_clause} WHERE id = ?",
+            (*updates.values(), incident_id),
+        )
+        return True
+
+
+def close_incident(incident_id, root_cause, resolution_summary, closed_by):
+    """Mark an incident as closed with root cause and resolution."""
+    return update_incident(
+        incident_id,
+        status="closed",
+        root_cause=root_cause,
+        resolution_summary=resolution_summary,
+        closed_ts=time.time(),
+        closed_by=closed_by,
+    )
+
+
+def delete_incident(incident_id):
+    """Delete an incident (cascades to alerts, links, comments)."""
+    with _conn() as c:
+        c.execute("DELETE FROM incident WHERE id = ?", (incident_id,))
+
+
+# ---- INCIDENT ↔ ALERT LINKING ----
+
+def add_alert_to_incident(incident_id, log_id, added_by):
+    """Associate a log entry (alert) with an incident."""
+    with _conn() as c:
+        try:
+            c.execute(
+                "INSERT INTO incident_alert (incident_id, log_id, added_ts, added_by) "
+                "VALUES (?, ?, ?, ?)",
+                (incident_id, log_id, time.time(), added_by),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            # Already linked
+            return False
+
+
+def remove_alert_from_incident(incident_id, log_id):
+    """Unlink an alert from an incident."""
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM incident_alert WHERE incident_id = ? AND log_id = ?",
+            (incident_id, log_id),
+        )
+
+
+def get_incident_alerts(incident_id):
+    """Fetch all alerts (log entries) for an incident, chronologically."""
+    with _conn() as c:
+        rows = c.execute(
+            """
+            SELECT l.id, l.ts, l.time_str, l.sector, l.message, l.severity, l.attack_type,
+                   l.status, l.mitre_id, l.mitre_label, l.forest_risk, l.trend_risk,
+                   l.metric_scores
+            FROM log l
+            INNER JOIN incident_alert ia ON l.id = ia.log_id
+            WHERE ia.incident_id = ?
+            ORDER BY l.ts ASC
+            """,
+            (incident_id,),
+        ).fetchall()
+        
+        results = []
+        for r in rows:
+            d = dict(r)
+            raw_scores = d.pop("metric_scores", None)
+            try:
+                d["metric_scores"] = json.loads(raw_scores) if raw_scores else {}
+            except (TypeError, ValueError):
+                d["metric_scores"] = {}
+            d["forest_risk"] = d.get("forest_risk") or 0.0
+            d["trend_risk"] = d.get("trend_risk") or 0.0
+            results.append(d)
+        return results
+
+
+def get_alert_incidents(log_id):
+    """Fetch all incidents a log entry (alert) is part of."""
+    with _conn() as c:
+        rows = c.execute(
+            """
+            SELECT i.* FROM incident i
+            INNER JOIN incident_alert ia ON i.id = ia.incident_id
+            WHERE ia.log_id = ?
+            ORDER BY i.ts DESC
+            """,
+            (log_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---- INCIDENT LINKING (RELATIONSHIPS) ----
+
+def link_incidents(incident_id_a, incident_id_b, relation_type, notes, created_by):
+    """Create a link between two incidents (related, chain, etc.).
+    
+    relation_type can be: 'related', 'chain', 'copied', 'duplicate'.
+    Automatically normalizes so lower ID is always 'a' for dedup.
+    """
+    # Normalize: always store with lower ID as 'a'
+    if incident_id_a > incident_id_b:
+        incident_id_a, incident_id_b = incident_id_b, incident_id_a
+    
+    with _conn() as c:
+        try:
+            c.execute(
+                "INSERT INTO incident_link "
+                "(incident_id_a, incident_id_b, relation_type, notes, created_ts, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (incident_id_a, incident_id_b, relation_type, notes, time.time(), created_by),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            # Link already exists
+            return False
+
+
+def unlink_incidents(incident_id_a, incident_id_b, relation_type):
+    """Remove a link between two incidents."""
+    if incident_id_a > incident_id_b:
+        incident_id_a, incident_id_b = incident_id_b, incident_id_a
+    
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM incident_link "
+            "WHERE incident_id_a = ? AND incident_id_b = ? AND relation_type = ?",
+            (incident_id_a, incident_id_b, relation_type),
+        )
+
+
+def get_incident_links(incident_id):
+    """Fetch all linked incidents (both directions) for a given incident."""
+    with _conn() as c:
+        # Links where this incident is 'a'
+        rows_a = c.execute(
+            """
+            SELECT il.*, i.title, i.status, i.severity, i.sector
+            FROM incident_link il
+            INNER JOIN incident i ON il.incident_id_b = i.id
+            WHERE il.incident_id_a = ?
+            """,
+            (incident_id,),
+        ).fetchall()
+        
+        # Links where this incident is 'b'
+        rows_b = c.execute(
+            """
+            SELECT il.*, i.title, i.status, i.severity, i.sector
+            FROM incident_link il
+            INNER JOIN incident i ON il.incident_id_a = i.id
+            WHERE il.incident_id_b = ?
+            """,
+            (incident_id,),
+        ).fetchall()
+        
+        return {
+            "outgoing": [dict(r) for r in rows_a],
+            "incoming": [dict(r) for r in rows_b],
+        }
+
+
+# ---- INCIDENT COMMENTS / COLLABORATION ----
+
+def add_comment(incident_id, author, body):
+    """Add a comment to an incident."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO incident_comment (incident_id, author, body, ts) "
+            "VALUES (?, ?, ?, ?)",
+            (incident_id, author, body, time.time()),
+        )
+        return cur.lastrowid
+
+
+def get_incident_comments(incident_id):
+    """Fetch all comments for an incident, chronologically."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM incident_comment WHERE incident_id = ? ORDER BY ts ASC",
+            (incident_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_comment(comment_id, body, edited_by):
+    """Edit a comment."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE incident_comment SET body = ?, edited_ts = ?, edited_by = ? WHERE id = ?",
+            (body, time.time(), edited_by, comment_id),
+        )
+
+
+def delete_comment(comment_id):
+    """Delete a comment."""
+    with _conn() as c:
+        c.execute("DELETE FROM incident_comment WHERE id = ?", (comment_id,))
+
+
+# ---- INCIDENT ANALYTICS / TIMELINES ----
+
+def get_incident_timeline(incident_id):
+    """Fetch a complete timeline of an incident:
+    - All linked alerts (from incident_alert)
+    - All incident status changes / metadata updates (audit trail)
+    - All comments
+    
+    Merged and sorted by timestamp for a comprehensive narrative view.
+    """
+    alerts = get_incident_alerts(incident_id)
+    comments = get_incident_comments(incident_id)
+    
+    timeline_events = []
+    
+    # Add alerts as events
+    for alert in alerts:
+        timeline_events.append({
+            "type": "alert",
+            "ts": alert["ts"],
+            "time_str": alert["time_str"],
+            "severity": alert["severity"],
+            "sector": alert["sector"],
+            "message": alert["message"],
+            "attack_type": alert.get("attack_type"),
+            "mitre_id": alert.get("mitre_id"),
+            "log_id": alert["id"],
+        })
+    
+    # Add comments as events
+    for comment in comments:
+        timeline_events.append({
+            "type": "comment",
+            "ts": comment["ts"],
+            "author": comment["author"],
+            "body": comment["body"],
+            "edited_ts": comment.get("edited_ts"),
+            "edited_by": comment.get("edited_by"),
+        })
+    
+    # Sort by timestamp
+    timeline_events.sort(key=lambda x: x["ts"])
+    
+    return timeline_events
+
+
+def suggest_incident_links(incident_id):
+    """Suggest other incidents to link (based on MITRE technique, sector, time window).
+    
+    Returns list of incidents sorted by relevance score.
+    """
+    current = get_incident(incident_id)
+    if not current:
+        return []
+    
+    # Get MITRE techniques from alerts in this incident
+    alerts = get_incident_alerts(incident_id)
+    techniques = set(a.get("mitre_id") for a in alerts if a.get("mitre_id"))
+    
+    # Find other open incidents in same sector or with same MITRE technique
+    # created in the last 30 days
+    cutoff = time.time() - (30 * 24 * 60 * 60)
+    
+    with _conn() as c:
+        rows = c.execute(
+            """
+            SELECT DISTINCT i.id, i.title, i.sector, i.status, i.ts,
+                   COUNT(DISTINCT ia.log_id) as alert_count
+            FROM incident i
+            LEFT JOIN incident_alert ia ON i.id = ia.incident_id
+            WHERE i.id != ? AND i.ts >= ? AND i.status IN ('open', 'investigating')
+              AND (i.sector = ? OR EXISTS (
+                SELECT 1 FROM incident_alert ia2
+                INNER JOIN log l ON ia2.log_id = l.id
+                WHERE ia2.incident_id = i.id AND l.mitre_id IN (?, ?)
+              ))
+            GROUP BY i.id
+            ORDER BY i.ts DESC
+            LIMIT 10
+            """,
+            (incident_id, cutoff, current.get("sector"), 
+             list(techniques)[0] if techniques else None,
+             list(techniques)[1] if len(techniques) > 1 else None),
+        ).fetchall()
+        
+        return [dict(r) for r in rows]
+
+
+def incident_stats():
+    """Return incident summary statistics."""
+    with _conn() as c:
+        total = c.execute("SELECT COUNT(*) as cnt FROM incident").fetchone()["cnt"]
+        open_incidents = c.execute(
+            "SELECT COUNT(*) as cnt FROM incident WHERE status IN ('open', 'investigating')"
+        ).fetchone()["cnt"]
+        closed = c.execute(
+            "SELECT COUNT(*) as cnt FROM incident WHERE status = 'closed'"
+        ).fetchone()["cnt"]
+        
+        # Average time to close
+        closed_times = c.execute(
+            "SELECT AVG(closed_ts - ts) as avg_time FROM incident WHERE status = 'closed' AND closed_ts IS NOT NULL"
+        ).fetchone()
+        avg_close_time = int(closed_times["avg_time"]) if closed_times["avg_time"] else 0
+        
+        return {
+            "total": total,
+            "open": open_incidents,
+            "closed": closed,
+            "avg_time_to_close_seconds": avg_close_time,
+        }

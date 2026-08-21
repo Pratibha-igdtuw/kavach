@@ -245,9 +245,24 @@
   }
 
   let spinY = 0.12;
+  let sectionVisible = true;
+  let pageVisible = !document.hidden;
+  let animationFrame = null;
+
+  const visibilityObserver = new IntersectionObserver(([entry]) => {
+    sectionVisible = entry.isIntersecting;
+    if (sectionVisible && pageVisible && animationFrame === null) animate();
+  }, { threshold: 0.01 });
+  visibilityObserver.observe(section);
+  document.addEventListener('visibilitychange', () => {
+    pageVisible = !document.hidden;
+    if (pageVisible && sectionVisible && animationFrame === null) animate();
+  });
 
   function animate() {
-    requestAnimationFrame(animate);
+    animationFrame = null;
+    if (!pageVisible || !sectionVisible) return;
+    animationFrame = requestAnimationFrame(animate);
     const t = clock.getElapsedTime();
 
     if (!assembled) {

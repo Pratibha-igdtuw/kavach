@@ -1225,7 +1225,6 @@ button:focus-visible, select:focus-visible, .node-group:focus-visible {
 /* Log entry with drill-down support */
 .log-entry.expandable { cursor: pointer; }
 .log-entry.expandable:hover { background: rgba(201,162,39,0.08); }
-.drill-down-actions { display: flex; gap: 8px; margin-top: 4px; }
 
 /* Drill-down modal overlay */
 #drill-down-modal {
@@ -1280,4 +1279,88 @@ button:focus-visible, select:focus-visible, .node-group:focus-visible {
 /* Queue count badge in filter row */
 #queue-count { padding: 0 12px; border-radius: 4px;
   background: rgba(63,167,150,0.15); color: var(--teal);
+}
+
+/* Performance optimization: GPU acceleration for cursor & animated elements */
+.cursor-dot, .cursor-ring { 
+  will-change: transform;
+  transform: translate3d(0, 0, 0);
+}
+
+/* Reduce repaints on heavy animations */
+#particle-canvas, .radar-sweep {
+  contain: layout style paint;
+}
+
+/* Smooth scrolling without layout thrashing */
+.log-scroll, .audit-scroll {
+  will-change: scroll-position;
+}
+
+/* Optimize gauge animations */
+.gauge-fill {
+  will-change: stroke-dasharray;
+}
+
+/* Reduce shadow computation cost */
+.sector-card {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  will-change: transform;
+}
+
+/* Mobile: disable cursor tracking & heavy animations */
+@media (max-width: 768px) {
+  .cursor-dot, .cursor-ring { display: none; }
+  .radar-sweep { opacity: 0.1; }
+  #particle-canvas { height: 200px; }
+}
+
+/* ---------- PERFORMANCE MODE: Disable animations for slow browsers ---------- */
+body.perf-mode * {
+  animation: none !important;
+  transition: none !important;
+  will-change: auto !important;
+}
+
+body.perf-mode .cursor-dot, 
+body.perf-mode .cursor-ring { 
+  display: none !important; 
+}
+
+body.perf-mode .radar-sweep { 
+  opacity: 0 !important; 
+}
+
+body.perf-mode #particle-canvas { 
+  display: none !important; 
+}
+
+body.perf-mode .sector-card { 
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2) !important; 
+}
+
+body.perf-mode .log-entry:hover { 
+  transform: none !important; 
+}
+
+body.perf-mode svg { 
+  filter: none !important; 
+}
+
+/* Performance mode button styling */
+#perf-mode-btn {
+  position: relative;
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+#perf-mode-btn:hover {
+  opacity: 1;
+  color: var(--teal);
+}
+
+#perf-mode-btn.active {
+  color: #e57368;
+  opacity: 1;
+  text-shadow: 0 0 8px rgba(229, 115, 104, 0.4);
 }
