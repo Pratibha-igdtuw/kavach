@@ -102,13 +102,25 @@
             <span class="val">{{ h.detector_trained_label }}</span>
           </div>
           <div class="health-row">
+            <span>Baseline</span>
+            <span class="val">
+              <span class="pill {{ 'ok' if h.trained_on_real_data else 'warn' }}">
+                {{ 'Real data (' ~ h.real_row_count ~ ' rows)' if h.trained_on_real_data else 'Synthetic' }}
+              </span>
+            </span>
+          </div>
+          <div class="health-row">
+            <span>Ingested rows</span>
+            <span class="val">{{ h.ingest_row_count }}</span>
+          </div>
+          <div class="health-row">
             <span>Containment</span>
             <span class="val">
               <span class="pill {{ 'warn' if h.contained else 'ok' }}">{{ 'Active' if h.contained else 'Clear' }}</span>
             </span>
           </div>
           <form method="POST" action="{{ url_for('admin_retrain_detector', sector=s) }}"
-                onsubmit="return confirm('Retrain the {{ sector_labels.get(s, s) }} detector on fresh baseline traffic? This resets its feedback bias and containment state.');">
+                onsubmit="return confirm('Retrain the {{ sector_labels.get(s, s) }} detector — uses real ingested data if available, otherwise synthetic. Resets feedback bias and containment state.');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="mini-btn">🧠 Retrain Detector</button>
           </form>
@@ -153,6 +165,32 @@
         Leave the URL blank and save to disable webhook notifications. This persists to the database and
         takes effect immediately — no restart needed, and it's not visible to analyst/executive accounts.
       </p>
+    </section>
+
+    <section class="glass-panel admin-panel">
+      <h2 class="panel-title">Telemetry Ingestion <span class="panel-sub">— real traffic → continuous baseline learning</span></h2>
+      <p style="font-size: 13px; color: var(--text-dim); margin: 10px 0 6px;">
+        Push real network telemetry to <code style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--gold)">POST /api/ingest</code>
+        (machine-to-machine, no login required). Detectors auto-retrain on a rolling window every
+        <strong style="color:var(--text)">{{ retrain_interval_s }}s</strong>,
+        or immediately via the 🧠 Retrain button above.
+      </p>
+      <div style="background:rgba(0,0,0,0.25);border:1px solid var(--panel-border);border-radius:8px;padding:14px 16px;margin:12px 0;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);line-height:1.7;">
+        <span style="color:var(--gold)">Authorization: Bearer</span> &lt;KAVACH_INGEST_KEY&gt;<br>
+        <span style="color:var(--gold)">Content-Type: application/json</span><br><br>
+        <span style="color:var(--teal)">// single sector</span><br>
+        { "sector": "hospital", "source": "cloudwatch",<br>
+        &nbsp;&nbsp;"readings": [{ "network_traffic_mbps": 118, "failed_logins": 1,<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;"cpu_usage_pct": 34, "data_egress_mb": 5, "active_connections": 152 }] }<br><br>
+        <span style="color:var(--teal)">// batch (multiple sectors in one call)</span><br>
+        { "batch": [ { "sector": "hospital", ... }, { "sector": "bank", ... } ] }
+      </div>
+      <div style="font-size:12px;color:var(--text-dim);">
+        API key status:
+        <span class="pill {{ 'ok' if ingest_key_from_env else 'warn' }}">
+          {{ 'Set via KAVACH_INGEST_KEY env var' if ingest_key_from_env else 'Ephemeral (set KAVACH_INGEST_KEY to persist across restarts)' }}
+        </span>
+      </div>
     </section>
 
     <section class="glass-panel admin-panel">

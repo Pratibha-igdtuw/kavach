@@ -102,6 +102,30 @@ def init_db():
                 updated_ts REAL
             )
         """)
+        # Real telemetry ingested via /api/ingest (or future connectors).
+        # Each row is one reading for one sector — the same shape as what the
+        # simulator produces, so SectorDetector.retrain_on_real_data() can pull
+        # a rolling window of these rows and feed them straight to IsolationForest.
+        # source_label is a free-text tag set by the caller (e.g. "syslog",
+        # "cloudwatch", "siem_export", "webhook") so an admin can see where each
+        # batch came from in the health panel.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS ingest_telemetry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                sector TEXT NOT NULL,
+                network_traffic_mbps REAL,
+                failed_logins REAL,
+                cpu_usage_pct REAL,
+                data_egress_mb REAL,
+                active_connections REAL,
+                source_label TEXT
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ingest_sector_ts "
+            "ON ingest_telemetry(sector, ts)"
+        )
         c.execute("CREATE INDEX IF NOT EXISTS idx_log_sector ON log(sector)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_history_sector_ts ON risk_history(sector, ts)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)")
@@ -987,3 +1011,90 @@ def incident_stats():
             "closed": closed,
             "avg_time_to_close_seconds": avg_close_time,
         }
+
+
+# ---------------- real telemetry ingestion ----------------
+
+INGEST_METRIC_COLS = [
+    "network_traffic_mbps",
+    "failed_logins",
+    "cpu_usage_pct",
+    "data_egress_mb",
+    "active_connections",
+]
+
+
+def insert_ingest_readings(sector, readings, source_label="api"):
+    """Bulk-insert a list of metric dicts for *sector* into ingest_telemetry.
+
+    Each dict in *readings* must contain the five INGEST_METRIC_COLS keys
+    (extra keys are silently ignored).  Returns the number of rows written.
+    A missing or non-numeric metric value for a row causes that row to be
+    skipped rather than crashing the whole batch.
+    """
+    rows = []
+    now = time.time()
+    for r in readings:
+        try:
+            row = tuple(float(r[m]) for m in INGEST_METRIC_COLS)
+        except (KeyError, TypeError, ValueError):
+            continue  # skip malformed rows
+        rows.append((now, sector, *row, source_label))
+
+    if not rows:
+        return 0
+
+    with _conn() as c:
+        c.executemany(
+            "INSERT INTO ingest_telemetry "
+            "(ts, sector, network_traffic_mbps, failed_logins, cpu_usage_pct, "
+            " data_egress_mb, active_connections, source_label) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    return len(rows)
+
+
+def get_ingest_baseline_window(sector, window_seconds=3600, limit=2000):
+    """Return up to *limit* recent ingest_telemetry rows for *sector* as a
+    list of metric dicts — ready to hand straight to numpy / IsolationForest.
+
+    window_seconds controls how far back to look (default 1 h).  The caller
+    can pass a larger value when bootstrapping a fresh detector that hasn't
+    seen much traffic yet.
+    """
+    cutoff = time.time() - window_seconds
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT network_traffic_mbps, failed_logins, cpu_usage_pct, "
+            "       data_egress_mb, active_connections "
+            "FROM ingest_telemetry "
+            "WHERE sector = ? AND ts >= ? "
+            "ORDER BY ts DESC LIMIT ?",
+            (sector, cutoff, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_ingest_rows(sector):
+    """How many ingested telemetry rows exist for this sector (for health panel)."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) as cnt FROM ingest_telemetry WHERE sector = ?",
+            (sector,),
+        ).fetchone()
+    return row["cnt"] if row else 0
+
+
+def prune_ingest_telemetry(sector, keep_seconds=86400):
+    """Delete ingest rows older than *keep_seconds* for *sector*.
+
+    Called automatically after each retrain so the table doesn't grow
+    unboundedly.  Default: keep 24 h of history.
+    """
+    cutoff = time.time() - keep_seconds
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM ingest_telemetry WHERE sector = ? AND ts < ?",
+            (sector, cutoff),
+        )

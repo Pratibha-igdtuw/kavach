@@ -54,6 +54,28 @@ SECTOR_LABEL = {"hospital": "Hospital", "power_grid": "Power Grid", "bank": "Ban
 
 INCIDENT_WINDOW_SECONDS = 24 * 60 * 60  # 24h, for the exec summary
 
+# ---- telemetry ingestion / continuous learning ----
+# Shared secret for the /api/ingest endpoint.  Rotate via env var in prod.
+# If unset a random key is generated at startup (printed to stdout so the
+# operator can copy it); it resets on every restart until a real secret is set.
+_generated_ingest_key = secrets.token_hex(24)
+INGEST_API_KEY = os.environ.get("KAVACH_INGEST_KEY") or _generated_ingest_key
+if not os.environ.get("KAVACH_INGEST_KEY"):
+    print(
+        f"[KAVACH] No KAVACH_INGEST_KEY env var set — "
+        f"using ephemeral key for /api/ingest: {INGEST_API_KEY}",
+        flush=True,
+    )
+
+# How often (seconds) the background thread checks whether each sector's
+# detector should be retrained on accumulated real telemetry.
+# Operators can tune via env var (e.g. KAVACH_RETRAIN_INTERVAL=1800).
+RETRAIN_INTERVAL = int(os.environ.get("KAVACH_RETRAIN_INTERVAL", "300"))
+
+# Rolling window of real telemetry to train on (seconds).
+# 3600 = last 1 hour of ingested readings.
+RETRAIN_WINDOW_SECONDS = int(os.environ.get("KAVACH_RETRAIN_WINDOW", "3600"))
+
 # Analyst response playbook: recommended actions per attack type
 RESPONSE_PLAYBOOK = {
     "ddos": [
@@ -241,8 +263,38 @@ def compute_exec_summary(sectors_payload):
 
 
 def background_loop():
-    """Continuously generate telemetry, score it, propagate, persist, and push to clients."""
+    """Continuously generate telemetry, score it, propagate, persist, and push to clients.
+
+    Also runs a periodic retraining check every RETRAIN_INTERVAL seconds:
+    if a sector has accumulated enough real ingested telemetry, its detector
+    is quietly re-fitted on that rolling window without disrupting the live
+    scoring loop.
+    """
+    _last_retrain_check = time.time()
+
     while True:
+        # ---- periodic baseline retraining on real ingested data ----
+        now = time.time()
+        if now - _last_retrain_check >= RETRAIN_INTERVAL:
+            _last_retrain_check = now
+            for sector in SECTORS:
+                rows = storage.get_ingest_baseline_window(
+                    sector, window_seconds=RETRAIN_WINDOW_SECONDS
+                )
+                if rows:
+                    ok = detectors[sector].retrain_on_real_data(rows)
+                    if ok:
+                        storage.prune_ingest_telemetry(sector)
+                        socketio.emit(
+                            "detector_retrained",
+                            {
+                                "sector": sector,
+                                "auto": True,
+                                "real_rows": len(rows),
+                                "detail": f"auto-retrain on {len(rows)} real rows",
+                            },
+                        )
+
         payload = {"sectors": {}, "propagation": [], "timestamp": time.time()}
         base_scores = {}
         anomaly_flags = {}
@@ -404,6 +456,122 @@ def api_history(sector):
     if sector not in SECTORS:
         return jsonify({"error": "unknown sector"}), 404
     return jsonify(storage.sector_history(sector, limit=120))
+
+
+# ---- /api/ingest — real telemetry ingestion ----
+
+def _check_ingest_auth():
+    """Return True if the request carries a valid ingest API key.
+
+    Accepted in either the Authorization header (Bearer <key>) or the
+    X-Kavach-Key header, to accommodate a wide range of webhook senders
+    and syslog forwarders without requiring a browser session.
+    """
+    bearer = request.headers.get("Authorization", "")
+    if bearer.startswith("Bearer "):
+        return bearer[7:] == INGEST_API_KEY
+    return request.headers.get("X-Kavach-Key", "") == INGEST_API_KEY
+
+
+@app.route("/api/ingest", methods=["POST"])
+@csrf.exempt  # machine-to-machine endpoint — CSRF protection via API key
+@limiter.limit("600 per minute")  # generous; a SIEM can be chatty
+def api_ingest():
+    """Accept real telemetry and feed it into the per-sector baseline store.
+
+    Authentication: Bearer token or X-Kavach-Key header (value = KAVACH_INGEST_KEY).
+
+    Payload (JSON):
+
+        Single reading for one sector:
+        {
+            "sector": "hospital",
+            "source": "cloudwatch",          // optional free-text label
+            "readings": [
+                {
+                    "network_traffic_mbps": 118.4,
+                    "failed_logins": 1,
+                    "cpu_usage_pct": 33.7,
+                    "data_egress_mb": 4.9,
+                    "active_connections": 148
+                }
+            ]
+        }
+
+        Batch for multiple sectors in one call:
+        {
+            "batch": [
+                { "sector": "hospital",   "source": "syslog",  "readings": [...] },
+                { "sector": "power_grid", "source": "siem",    "readings": [...] }
+            ]
+        }
+
+    Response:
+        { "accepted": <total rows written>, "skipped": <malformed rows>, "sectors": { ... } }
+    """
+    if not _check_ingest_auth():
+        return jsonify({"error": "Unauthorized — provide a valid KAVACH_INGEST_KEY"}), 401
+
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    # Normalise both single-sector and multi-sector payloads into a list.
+    if "batch" in body:
+        items = body["batch"]
+        if not isinstance(items, list):
+            return jsonify({"error": "'batch' must be a list"}), 400
+    elif "sector" in body:
+        items = [body]
+    else:
+        return jsonify({"error": "Payload must contain 'sector' or 'batch'"}), 400
+
+    total_accepted = 0
+    total_skipped = 0
+    per_sector = {}
+
+    for item in items:
+        sector = item.get("sector", "")
+        if sector not in SECTORS:
+            total_skipped += len(item.get("readings", []))
+            continue
+        source = str(item.get("source", "api"))[:64]
+        readings = item.get("readings", [])
+        if not isinstance(readings, list):
+            total_skipped += 1
+            continue
+
+        written = storage.insert_ingest_readings(sector, readings, source_label=source)
+        skipped = len(readings) - written
+        total_accepted += written
+        total_skipped += skipped
+        per_sector[sector] = {"accepted": written, "skipped": skipped}
+
+    return jsonify({
+        "accepted": total_accepted,
+        "skipped": total_skipped,
+        "sectors": per_sector,
+    }), 202
+
+
+@app.route("/api/ingest/status")
+@auth.admin_required
+def api_ingest_status():
+    """Admin-only: how many ingested rows exist per sector, and whether each
+    detector has been trained on real data yet."""
+    result = {}
+    for sector in SECTORS:
+        det = detectors[sector]
+        result[sector] = {
+            "ingest_row_count": storage.count_ingest_rows(sector),
+            "trained_on_real_data": det.trained_on_real_data,
+            "real_row_count_last_fit": det.real_row_count,
+            "trained_at": det.trained_at,
+            "trained_at_label": time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(det.trained_at)
+            ),
+        }
+    return jsonify(result)
 
 
 @app.route("/api/analyst/queue")
@@ -607,20 +775,39 @@ def admin_reset_demo():
 @app.route("/admin/detector/<sector>/retrain", methods=["POST"])
 @auth.admin_required
 def admin_retrain_detector(sector):
-    """Granular version of what 'Reset Demo' does to the model: refits just
-    this sector's IsolationForest on fresh synthetic 'normal' traffic,
-    without touching the other sectors, the anomaly log, risk history, or
-    audit trail. Containment/false-positive state for this sector resets
-    too, since a freshly retrained model shouldn't inherit the old model's
-    feedback bias."""
+    """Granular retrain for a single sector.
+
+    Prefers real ingested telemetry when enough rows exist (>= MIN_REAL_ROWS);
+    falls back to a fresh synthetic-bootstrap detector otherwise.  Either way
+    the containment/feedback-bias state for this sector is reset so the freshly
+    fitted model starts clean.
+    """
     if sector not in SECTORS:
         return redirect(url_for("admin_panel", error="Unknown sector."))
-    detectors[sector] = SectorDetector()
+
+    rows = storage.get_ingest_baseline_window(
+        sector, window_seconds=RETRAIN_WINDOW_SECONDS
+    )
+    if rows:
+        ok = detectors[sector].retrain_on_real_data(rows)
+        if ok:
+            detail = f"{len(rows)} real telemetry rows (window={RETRAIN_WINDOW_SECONDS}s)"
+        else:
+            # rows were present but retrain returned False (shouldn't happen normally)
+            detectors[sector] = SectorDetector()
+            detail = "synthetic (real-data retrain failed)"
+    else:
+        detectors[sector] = SectorDetector()
+        detail = "synthetic (no ingested data yet)"
+
     contained[sector] = 0
     was_contained[sector] = False
-    log_audit_and_emit("Retrained detector", sector=sector)
-    socketio.emit("detector_retrained", {"sector": sector})
-    return redirect(url_for("admin_panel", success=f"Detector retrained for {SECTOR_LABEL.get(sector, sector)}."))
+    log_audit_and_emit("Retrained detector", sector=sector, detail=detail)
+    socketio.emit("detector_retrained", {"sector": sector, "detail": detail})
+    storage.prune_ingest_telemetry(sector)
+
+    label = SECTOR_LABEL.get(sector, sector)
+    return redirect(url_for("admin_panel", success=f"Detector retrained for {label} — {detail}."))
 
 
 @app.route("/api/admin/health")
@@ -631,14 +818,21 @@ def api_admin_health():
     whether outbound webhook notifications are configured."""
     sectors_health = {}
     for sector in SECTORS:
+        det = detectors[sector]
         sectors_health[sector] = {
             "data_source": "replay" if simulator.is_replaying(sector) else "synthetic",
-            "detector_trained_at": detectors[sector].trained_at,
+            "detector_trained_at": det.trained_at,
             "contained": contained[sector] > 0,
+            "trained_on_real_data": det.trained_on_real_data,
+            "real_row_count": det.real_row_count,
+            "ingest_row_count": storage.count_ingest_rows(sector),
         }
     return jsonify({
         "sectors": sectors_health,
         "webhook": notifier.current_config(),
+        "ingest_key_configured": bool(os.environ.get("KAVACH_INGEST_KEY")),
+        "retrain_interval_seconds": RETRAIN_INTERVAL,
+        "retrain_window_seconds": RETRAIN_WINDOW_SECONDS,
     })
 
 
@@ -732,8 +926,13 @@ def admin_panel():
         s: {
             "data_source": "replay" if simulator.is_replaying(s) else "synthetic",
             "detector_trained_at": detectors[s].trained_at,
-            "detector_trained_label": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(detectors[s].trained_at)),
+            "detector_trained_label": time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(detectors[s].trained_at)
+            ),
             "contained": contained[s] > 0,
+            "trained_on_real_data": detectors[s].trained_on_real_data,
+            "real_row_count": detectors[s].real_row_count,
+            "ingest_row_count": storage.count_ingest_rows(s),
         }
         for s in SECTORS
     }
@@ -752,6 +951,8 @@ def admin_panel():
         audit_filters=audit_filters,
         sectors_health=sectors_health,
         webhook_config=notifier.current_config(),
+        retrain_interval_s=RETRAIN_INTERVAL,
+        ingest_key_from_env=bool(os.environ.get("KAVACH_INGEST_KEY")),
     )
 
 

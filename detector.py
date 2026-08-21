@@ -2,8 +2,10 @@
 Behavioral-baseline anomaly detector per sector.
 
 Ensemble of two independent signals:
-  1. IsolationForest        — trained on synthetic 'normal' traffic, catches
-                               multivariate outliers.
+  1. IsolationForest        — trained on synthetic 'normal' traffic (startup
+                               bootstrap) or a rolling window of real ingested
+                               telemetry (production).  retrain_on_real_data()
+                               re-fits it whenever enough new traffic exists.
   2. EWMA/CUSUM trend watch — an online exponentially-weighted mean/variance
                                tracker that catches sustained drift even when
                                a single reading isn't extreme enough to trip
@@ -17,6 +19,15 @@ this is the explainability layer.
 A lightweight feedback loop lets an analyst mark an alert as a false
 positive; that nudges a per-sector risk bias down for a while, which is a
 simple stand-in for "the model adapts."
+
+Continuous baseline learning
+----------------------------
+The admin "Retrain Detector" button and the background retraining thread in
+app.py both call retrain_on_real_data(rows).  *rows* is a list of metric dicts
+pulled from the ingest_telemetry table — real traffic from /api/ingest or any
+future connector.  If fewer than MIN_REAL_ROWS rows are available the method
+falls back to synthetic data augmented with whatever real rows do exist, so
+the detector degrades gracefully rather than refusing to retrain.
 """
 import random
 import time
@@ -25,6 +36,13 @@ import numpy as np
 from sklearn.ensemble import IsolationForest
 
 from simulator import METRIC_BASELINES, ATTACK_SIGNATURES, METRIC_NAMES
+
+# Minimum number of real ingested rows before we trust them enough to retrain.
+# Below this threshold we pad with synthetic Gaussian samples so the
+# IsolationForest still has enough variance to learn from.
+MIN_REAL_ROWS = 50
+# How many synthetic samples to add when padding a small real dataset.
+SYNTHETIC_PAD_SIZE = 200
 
 # Precompute a normalized "fingerprint" vector per attack type from its
 # multiplier ranges, so we can classify anomalies by cosine similarity.
@@ -89,6 +107,61 @@ class SectorDetector:
         # admin System Health panel so it's obvious how stale a sector's
         # model is (esp. after a "Retrain Detector" / "Reset Demo" action).
         self.trained_at = time.time()
+
+        # False when using the synthetic bootstrap; True once retrained on
+        # at least MIN_REAL_ROWS of real ingested traffic.
+        self.trained_on_real_data = False
+        # How many real rows were used in the last fit (0 = pure synthetic).
+        self.real_row_count = 0
+
+    def retrain_on_real_data(self, rows):
+        """Re-fit the IsolationForest on a rolling window of real telemetry.
+
+        *rows* is a list of metric dicts from storage.get_ingest_baseline_window().
+        If len(rows) >= MIN_REAL_ROWS the model is trained purely on real data;
+        otherwise it is padded with synthetic Gaussian samples so the
+        IsolationForest always has enough examples to learn a baseline.
+
+        The EWMA trend tracker is intentionally *not* reset here — it is an
+        online signal that accumulates continuously regardless of how the
+        IsolationForest has been trained.  The feedback bias (risk_bias) is
+        also preserved so an ongoing suppression survives a background retrain.
+
+        Returns True if the retrain succeeded, False if it was skipped (e.g.
+        rows is empty and MIN_REAL_ROWS > 0 was not met — callers can check).
+        """
+        n_real = len(rows)
+
+        if n_real == 0:
+            return False  # nothing to learn from yet
+
+        # Build the real portion of the training matrix.
+        real_matrix = np.array(
+            [[r[m] for m in METRIC_NAMES] for r in rows], dtype=float
+        )
+
+        if n_real >= MIN_REAL_ROWS:
+            X_train = real_matrix
+        else:
+            # Pad with synthetic samples so IsolationForest has enough data.
+            synthetic = np.array(
+                [_generate_normal_sample() for _ in range(SYNTHETIC_PAD_SIZE)]
+            )
+            X_train = np.vstack([real_matrix, synthetic])
+
+        new_model = IsolationForest(
+            n_estimators=150, contamination=0.05, random_state=42
+        )
+        new_model.fit(X_train)
+
+        # Atomic swap — keeps the detector live during the (cheap) fit.
+        self.model = new_model
+        self.means = X_train.mean(axis=0)
+        self.stds = X_train.std(axis=0) + 1e-6
+        self.trained_at = time.time()
+        self.trained_on_real_data = n_real >= MIN_REAL_ROWS
+        self.real_row_count = n_real
+        return True
 
     def mark_false_positive(self):
         """Called when an analyst flags the latest alert as a false positive.
